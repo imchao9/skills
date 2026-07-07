@@ -7,10 +7,20 @@
 后续业务项目默认不要重复复制 skills，也不要走额外初始化命令；直接用软链把业务项目的 `.agents` 指向某个 profile 的 `.agents`：
 
 ```bash
-ln -s /Users/cm/Documents/Me/skills/profiles/all/.agents /path/to/project/.agents
+ln -s /Users/cm/Documents/Me/skills/profiles/core/.agents /path/to/project/.agents
 ```
 
-根目录 `.agents` 只是默认 profile 的 alias：`.agents -> profiles/all/.agents`。
+根目录 `.agents` 只是默认 profile 的 alias：`.agents -> profiles/core/.agents`。
+
+# Profile 语义
+- `profiles/core`：默认最小集，只放稳定自研或长期自维护 skill。
+- `profiles/ppt`：正式 PPT / HTML 演示稿生产链路；实验候选放 `profiles/ppt-lab`。
+- `profiles/web`：正式联网入口，目前只保留 `agent-reach`；其它抓取/浏览器实现放 `profiles/web-lab`。
+- `profiles/basketball`：篮球视频专用 skill，包括纯享版剪辑和集锦生成。
+- `profiles/mattpocock-skills`：来自 `mattpocock/skills` 的外部 skill，保留 GitHub 仓库名以区分来源。
+- `profiles/rtk-candidates`：RTK 本地候选 skill，未确认长期保留前不要放进 `core`。
+- `profiles/experimental`：其它实验或待归类 skill。
+- 不再使用 `profiles/all`，避免把“默认集”变成所有东西的混装目录。
 
 # Skill 安装
 外部来源使用 Vercel `skills` CLI 安装到 profile 内的 `.agents/skills/`。Git 跟踪复制后的 skill 文件；不把 `skills-lock.json` 当维护入口。
@@ -18,7 +28,7 @@ ln -s /Users/cm/Documents/Me/skills/profiles/all/.agents /path/to/project/.agent
 在目标 profile 目录里直接运行 Vercel CLI，不在本仓库再包一层命令：
 
 ```bash
-cd /Users/cm/Documents/Me/skills/profiles/all
+cd /Users/cm/Documents/Me/skills/profiles/<profile>
 env -u http_proxy -u https_proxy -u all_proxy npx --yes skills@latest add <owner>/<repo> --agent codex --skill '*' --yes --copy
 ```
 

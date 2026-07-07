@@ -8,16 +8,30 @@
 
 ```text
 profiles/
-  all/
+  core/
     .agents/
       skills/
         <skill-name>/
           SKILL.md
 
-.agents -> profiles/all/.agents
+.agents -> profiles/core/.agents
 ```
 
-`profiles/all` 是当前默认 profile。根目录 `.agents` 只是一个方便入口，指向 `profiles/all/.agents`。
+`profiles/core` 是当前默认 profile，只放稳定、确定自研或长期自维护的核心 skill。根目录 `.agents` 只是一个方便入口，指向 `profiles/core/.agents`。
+
+## Profile 分层
+
+```text
+profiles/core/                # 默认最小集，稳定自研核心
+profiles/ppt/                 # 正式 PPT / HTML 演示稿生产链路
+profiles/ppt-lab/             # PPT skill 实验候选
+profiles/web/                 # 正式联网入口，目前只保留 agent-reach
+profiles/web-lab/             # Firecrawl / XCrawl / browser-use 等实验候选
+profiles/mattpocock-skills/   # 来自 mattpocock/skills 的外部 skill
+profiles/rtk-candidates/      # RTK 本地候选，未确认是否长期保留
+profiles/experimental/        # 其它实验或待归类 skill
+profiles/basketball/          # 篮球视频专用
+```
 
 ## Skill 调试台
 
@@ -59,10 +73,10 @@ ln -s /Users/cm/Documents/Me/skills/.agents .agents
 或者明确选择某个 profile：
 
 ```bash
-ln -s /Users/cm/Documents/Me/skills/profiles/all/.agents .agents
+ln -s /Users/cm/Documents/Me/skills/profiles/core/.agents .agents
 ```
 
-后续如果有 `profiles/backend/.agents`、`profiles/writing/.agents`、`profiles/design/.agents`，目标项目只需要把 symlink 换到对应 profile。
+后续如果目标项目需要 PPT、Web、篮球或外部来源 skill，只需要把 symlink 换到对应 profile。
 
 如果目标项目已经有 `.agents`，先手动确认里面有没有项目私有内容，再决定是否替换。
 
@@ -72,7 +86,7 @@ ln -s /Users/cm/Documents/Me/skills/profiles/all/.agents .agents
 
 ```bash
 env -u http_proxy -u https_proxy -u all_proxy \
-  npx --yes skills@latest add /Users/cm/Documents/me/skills/profiles/all \
+  npx --yes skills@latest add /Users/cm/Documents/me/skills/profiles/core \
   --agent codex --skill '*' --yes --copy --full-depth
 ```
 
@@ -99,7 +113,7 @@ env -u http_proxy -u https_proxy -u all_proxy \
 只在这个仓库的某个 profile 里安装 skills，其他项目通过软链共享结果。
 
 ```bash
-cd /Users/cm/Documents/Me/skills/profiles/all
+cd /Users/cm/Documents/Me/skills/profiles/mattpocock-skills
 env -u http_proxy -u https_proxy -u all_proxy npx --yes skills@latest add mattpocock/skills --agent codex --skill '*' --yes --copy
 ```
 
@@ -128,7 +142,7 @@ profiles/<profile>/.agents/skills/<skill-name>/
 推荐规则：
 
 - 先放到最相关的专业 profile，例如 PPT 相关放 `profiles/ppt/.agents/skills/`，网页抓取相关放 `profiles/web/.agents/skills/`。
-- 确认会被多个场景长期复用后，再复制到 `profiles/all/.agents/skills/`。
+- 确认会被多个场景长期复用后，再复制到 `profiles/core/.agents/skills/` 或对应正式 profile。
 - 半成品、对比实验、效果截图、调试用例放 `debug/`，不要直接进入正式 profile。
 - 每个正式 skill 至少保留 `SKILL.md`；需要 UI 展示时加 `agents/openai.yaml`；复杂流程再加 `references/`、`scripts/`、`assets/`。
 - `SKILL.md` 只写会改变 agent 行为的流程和规则；详细风格、案例、评分表放到 `references/`。
@@ -142,14 +156,14 @@ rtk proxy python3 /Users/cm/.codex/skills/.system/skill-creator/scripts/init_ski
   --resources references,scripts
 ```
 
-创建后用真实 case 跑一遍，把输入、输出和截图放到 `debug/runs/<date>-<slug>/`。确认稳定后再同步到 `profiles/all` 或目标项目。
+创建后用真实 case 跑一遍，把输入、输出和截图放到 `debug/runs/<date>-<slug>/`。确认稳定后再同步到 `profiles/core`、对应正式 profile 或目标项目。
 
 ## 更新 Skill 版本
 
 更新就是在对应 profile 里重新跑同一条 Vercel 安装命令，让它覆盖旧文件，然后看 Git diff：
 
 ```bash
-cd /Users/cm/Documents/Me/skills/profiles/all
+cd /Users/cm/Documents/Me/skills/profiles/mattpocock-skills
 env -u http_proxy -u https_proxy -u all_proxy npx --yes skills@latest add mattpocock/skills --agent codex --skill '*' --yes --copy
 git diff
 ```
@@ -161,7 +175,7 @@ git diff
 查看当前 skills：
 
 ```bash
-cd /Users/cm/Documents/Me/skills/profiles/all
+cd /Users/cm/Documents/Me/skills/profiles/core
 env -u http_proxy -u https_proxy -u all_proxy npx --yes skills@latest list --json
 ```
 
@@ -172,7 +186,7 @@ env -u http_proxy -u https_proxy -u all_proxy npx --yes skills@latest list --jso
 ```bash
 cd /Users/cm/Documents/Me/skills
 comm -12 \
-  <(find profiles/all/.agents/skills -mindepth 1 -maxdepth 1 -type d -exec sh -c '[ -f "$1/SKILL.md" ] && basename "$1"' sh {} \; | sort) \
+  <(find profiles/core/.agents/skills -mindepth 1 -maxdepth 1 -type d -exec sh -c '[ -f "$1/SKILL.md" ] && basename "$1"' sh {} \; | sort) \
   <(find /Users/cm/.agents/skills -mindepth 1 -maxdepth 1 -type d -exec sh -c '[ -f "$1/SKILL.md" ] && basename "$1"' sh {} \; 2>/dev/null | sort)
 ```
 

@@ -20,6 +20,22 @@ env -u http_proxy -u https_proxy -u all_proxy \
   --agent codex --skill '*' --yes --copy --full-depth
 ```
 
+## 当前 Profile
+
+| Profile | 用途 |
+|---|---|
+| `core` | 默认最小集，稳定自研或长期自维护 skill |
+| `ppt` | 正式 PPT / HTML 演示稿生产链路 |
+| `ppt-lab` | PPT skill 实验候选 |
+| `web` | 正式联网入口，目前只保留 `agent-reach` |
+| `web-lab` | Firecrawl / XCrawl / browser-use 等实验候选 |
+| `mattpocock-skills` | 来自 `mattpocock/skills` 的外部 skill |
+| `rtk-candidates` | RTK 本地候选 skill |
+| `experimental` | 其它实验或待归类 skill |
+| `basketball` | 篮球视频专用，包括纯享版剪辑和集锦生成 |
+
+不要再使用 `profiles/all`。
+
 安装后会在目标项目生成：
 
 ```text
