@@ -1,0 +1,8 @@
+interface:
+  display_name: "Workflow Packaging Audit"
+  short_description: "Find repeated work worth packaging"
+  brand_color: "#0F766E"
+  default_prompt: "Use $workflow-packaging-audit to review my recent work and create only the smallest useful missing asset."
+
+policy:
+  allow_implicit_invocation: true

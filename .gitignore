@@ -1,0 +1,7 @@
+.DS_Store
+debug/
+skills-lock.json
+*.pyc
+__pycache__/
+.agents/skills/*/data/
+profiles/*/.agents/skills/*/data/

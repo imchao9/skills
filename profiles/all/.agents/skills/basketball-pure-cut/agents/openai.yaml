@@ -1,0 +1,8 @@
+interface:
+  display_name: "Basketball Pure Cut"
+  short_description: "Cut basketball replays into pure-play videos"
+  brand_color: "#B45309"
+  default_prompt: "Use $basketball-pure-cut to create a 480p proxy, detect non-game deletion candidates, cut a pure-play version, and verify the result."
+
+policy:
+  allow_implicit_invocation: true
