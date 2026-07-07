@@ -1,0 +1,1912 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const { execFile, spawn } = require('node:child_process');
+const { promisify } = require('node:util');
+const { redactText } = require('./skillctl');
+
+const SLS_BASE_URL = 'https://sls.console.aliyun.com';
+const SKILL_ROOT = path.resolve(__dirname, '..');
+const OUTPUT_DIR = path.join(SKILL_ROOT, 'output');
+const execFileAsync = promisify(execFile);
+const DEFAULT_AUTH_FILE = path.join(OUTPUT_DIR, 'alilog-auth.json');
+const DEFAULT_USER_FILE = path.join(OUTPUT_DIR, 'alilog-user.json');
+const DEFAULT_TIMEOUT_SECONDS = 180;
+const DEFAULT_SIZE = 10;
+const PLAYWRIGHT_OPEN_TIMEOUT_MS = 30000;
+const DEFAULT_AUTH_PROJECT = 'kuebernetes-production';
+const DEFAULT_AUTH_LOGSTORE = 'production';
+const DEFAULT_SIGNIN_DOMAIN = '1405841868155772.onaliyun.com';
+const DEFAULT_KEYCHAIN_SERVICE = 'alilog';
+const DEFAULT_TOTP_KEYCHAIN_SERVICE = 'alilog-totp';
+const DEFAULT_TOTP_PERIOD_SECONDS = 30;
+const DEFAULT_TOTP_DIGITS = 6;
+const DEFAULT_LOG_CHAR_LIMIT = 200;
+const CONTINUE_LOG_CHAR_LIMIT = 800;
+const DEFAULT_TOTAL_CHAR_LIMIT = 3000;
+const SELECT_FIELD_CHAR_LIMIT = 500;
+const ERROR_MESSAGE_CHAR_LIMIT = 600;
+const DEFAULT_CAPTCHA_REFRESH_LIMIT = 2;
+const DEFAULT_QUERY_FETCH_TIMEOUT_MS = 30000;
+const DEFAULT_OUTPUT_FIELDS = ['_container_name_', 'message'];
+const DEFAULT_OUTPUT_FIELD_SET = new Set(DEFAULT_OUTPUT_FIELDS);
+const HEADER_FIELD_SET = new Set(['__time__', 'time', '@timestamp', '_container_name_']);
+const RESULT_EXCLUDED_FIELDS = new Set([
+  '__time__',
+  '__source__',
+  '__topic__',
+  'time',
+  '_time_',
+  '_source_',
+  '_container_name_',
+  'content',
+  'message',
+]);
+const FALLBACK_SUMMARY_FIELDS = [
+  'request_method',
+  'request_uri',
+  'status',
+  'upstream_status',
+  'request_time',
+  'remote_addr',
+  'host',
+  'method',
+  'path',
+  'uri',
+  'url',
+  'level',
+  'class',
+  'trace_id',
+  'request_id',
+];
+const SLS_GET_LOGS_INDEX_PATH = '/console/logstoreindex/getLogs.json';
+const SLS_GET_LOGS_FULL_PATH = '/console/logs/getLogs.json';
+const SLS_LOGSTORE_LIST_PATH = '/console/logstore/list.json';
+const ALIYUN_SIGNIN_SPM_A = 'a2c44';
+const ALIYUN_SIGNIN_SPM_B = '11131515';
+
+// CLI argument policy
+function topLevelUsage() {
+  return [
+    'usage: scripts/alilog auth [--project PROJECT --logstore LOGSTORE] [--force-login] [--no-auto-fill] [--timeout SECONDS] [--profile-dir DIR] [--debug]',
+    '       scripts/alilog query --project PROJECT --logstore LOGSTORE --query QUERY (--time EXPR | --from TIME --to TIME) [--page N] [--size N] [--expand-sql] [--continue INDEX:OFFSET] [--select-fields FIELDS] [--extra-fields FIELDS]',
+    '       scripts/alilog fields --project PROJECT --logstore LOGSTORE --query QUERY (--time EXPR | --from TIME --to TIME)',
+    '       scripts/alilog logstores --project PROJECT [--keyword KEYWORD] [--page N] [--page-size N]',
+    '',
+    'commands:',
+    '  auth       capture SLS auth cookie and CSRF through browser login',
+    '  query      query SLS logs or SLS SQL with compact output',
+    '  fields     sample logs and list observed fields',
+    '  logstores  search logstores in a project',
+  ].join('\n');
+}
+
+function authUsage() {
+  return [
+    'usage: scripts/alilog auth [--project PROJECT --logstore LOGSTORE] [--force-login] [--no-auto-fill] [--timeout SECONDS] [--profile-dir DIR] [--debug]',
+    '',
+    'Opens Chrome, waits for Aliyun SLS login, captures auth cookie and CSRF, then writes output/alilog-auth.json.',
+    'project/logstore are target hints for opening a useful SLS page; missing target still can be a successful auth if cookie and CSRF are captured.',
+    '',
+    'options:',
+    '  --project PROJECT       target hint project; default kuebernetes-production',
+    '  --logstore LOGSTORE     target hint logstore; default production',
+    '  --no-auto-fill          do not fill local username/password/TOTP',
+    '  --force-login           clear login cookies in the temporary profile first',
+    '  --timeout SECONDS       login wait timeout',
+    '  --profile-dir DIR       diagnostic only; reuse an explicit Chrome profile dir',
+    '  --debug                 print auth lifecycle details without printing secrets',
+  ].join('\n');
+}
+
+function queryUsage() {
+  return [
+    'usage: scripts/alilog query --project PROJECT --logstore LOGSTORE --query QUERY (--time EXPR | --from TIME --to TIME) [--page N] [--size N] [--expand-sql] [--continue INDEX:OFFSET] [--select-fields FIELDS] [--extra-fields FIELDS]',
+    '',
+    'query output: default prints compact header and body; body prefers message, then content, then summary; one body is limited to 200 chars and total output to 3000 chars.',
+    '  search hint: search request id, TID text, or internal log text in indexed content; confirm real fields with fields before --extra-fields.',
+    '  --select-fields prints fields only; --extra-fields adds confirmed metadata fields to default output.',
+    '  --continue INDEX:OFFSET continues one selected log body; it is not pagination.',
+    '',
+    'query syntax: SLS syntax, not natural language. Prefer count/top/group by first, then fetch body logs.',
+    "examples: --query '*'",
+    "          --query '_container_name_: svc and error'",
+    "          --query 'content:prefix*'",
+    '',
+    'time: prefer --time last_1m|last_5m|last_15m|last_1h|last_4h|last_1d|last_3d|last_1w, now-15m~now-5m, now-1h, today, or yesterday. Explicit --from/--to still accepts YYYY-MM-DD HH:mm:ss.',
+  ].join('\n');
+}
+
+function fieldsUsage() {
+  return [
+    'usage: scripts/alilog fields --project PROJECT --logstore LOGSTORE --query QUERY (--time EXPR | --from TIME --to TIME)',
+    '',
+    'Samples matching logs and lists observed field names. Output includes sampled_logs, so sampled_logs=0 means this query found no sample logs, not that the logstore has no fields.',
+    'time: same as query, for example last_15m, now-30m, now-15m~now-5m, today.',
+    '',
+    'examples:',
+    "  scripts/alilog fields --project kuebernetes-production --logstore production --query '*' --time last_15m",
+    "  scripts/alilog fields --project kuebernetes-production --logstore production --query '_container_name_: svc' --time now-30m",
+  ].join('\n');
+}
+
+function logstoresUsage() {
+  return [
+    'usage: scripts/alilog logstores --project PROJECT [--keyword KEYWORD] [--page N] [--page-size N]',
+    '',
+    'Searches SLS logstores in a project using compact paginated output.',
+    '',
+    'examples:',
+    '  scripts/alilog logstores --project kuebernetes-production --keyword nginx',
+    '  scripts/alilog logstores --project k8s-dev --keyword staging --page 1 --page-size 20',
+  ].join('\n');
+}
+
+function usage(command = '') {
+  if (command === 'auth') return authUsage();
+  if (command === 'query') return queryUsage();
+  if (command === 'fields') return fieldsUsage();
+  if (command === 'logstores') return logstoresUsage();
+  return topLevelUsage();
+}
+
+function readValue(argv, index, key) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${key} requires a value`);
+  }
+  return value;
+}
+
+function parseArgs(argv) {
+  const command = argv[0];
+  if (!command || command === '-h' || command === '--help') {
+    console.log(usage());
+    process.exit(0);
+  }
+  if (!['auth', 'query', 'fields', 'logstores'].includes(command)) {
+    throw new Error(`unknown command: ${command}`);
+  }
+
+  const args = {
+    command,
+    project: '',
+    logstore: '',
+    query: '',
+    from: '',
+    to: '',
+    time: '',
+    page: 1,
+    size: command === 'fields' ? 20 : DEFAULT_SIZE,
+    pageSize: 18,
+    keyword: '',
+    timeout: DEFAULT_TIMEOUT_SECONDS,
+    authFile: DEFAULT_AUTH_FILE,
+    userFile: DEFAULT_USER_FILE,
+    profileDir: '',
+    signinDomain: DEFAULT_SIGNIN_DOMAIN,
+    username: process.env.ALILOG_USERNAME || '',
+    keychainService: process.env.ALILOG_KEYCHAIN_SERVICE || DEFAULT_KEYCHAIN_SERVICE,
+    totpKeychainService: process.env.ALILOG_TOTP_KEYCHAIN_SERVICE || DEFAULT_TOTP_KEYCHAIN_SERVICE,
+    totpInputSelector: process.env.ALILOG_TOTP_INPUT_SELECTOR || '',
+    noAutoFill: false,
+    forceLogin: false,
+    expandSql: false,
+    continueAt: '',
+    selectFields: [],
+    extraFields: [],
+    debug: false,
+  };
+
+  for (let i = 1; i < argv.length; i += 1) {
+    const key = argv[i];
+    if (key === '--project') { args.project = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--logstore') { args.logstore = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--query' && (command === 'query' || command === 'fields')) { args.query = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--from' && (command === 'query' || command === 'fields')) { args.from = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--to' && (command === 'query' || command === 'fields')) { args.to = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--time' && (command === 'query' || command === 'fields')) { args.time = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--keyword' && command === 'logstores') { args.keyword = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--page' && command === 'query') { args.page = Number(readValue(argv, i, key)); i += 1; continue; }
+    if (key === '--page' && command === 'logstores') { args.page = Number(readValue(argv, i, key)); i += 1; continue; }
+    if (key === '--size' && command === 'query') { args.size = Number(readValue(argv, i, key)); i += 1; continue; }
+    if (key === '--page-size' && command === 'logstores') { args.pageSize = Number(readValue(argv, i, key)); i += 1; continue; }
+    if (key === '--timeout' && command === 'auth') { args.timeout = Number(readValue(argv, i, key)); i += 1; continue; }
+    if (key === '--profile-dir' && command === 'auth') { args.profileDir = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--no-auto-fill' && command === 'auth') { args.noAutoFill = true; continue; }
+    if (key === '--force-login' && command === 'auth') { args.forceLogin = true; continue; }
+    if (key === '--debug' && command === 'auth') { args.debug = true; continue; }
+    if (key === '--expand-sql' && command === 'query') { args.expandSql = true; continue; }
+    if (key === '--continue' && command === 'query') { args.continueAt = readValue(argv, i, key); i += 1; continue; }
+    if (key === '--select-fields' && command === 'query') { args.selectFields = parseFieldList(readValue(argv, i, key)); i += 1; continue; }
+    if (key === '--extra-fields' && command === 'query') { args.extraFields = parseFieldList(readValue(argv, i, key)); i += 1; continue; }
+    if (key === '-h' || key === '--help') {
+      console.log(usage(command));
+      process.exit(0);
+    }
+    if (command === 'query' && args.query && !key.startsWith('-')) {
+      throw new Error(`unexpected argument after --query: ${key}. If the query is *, quote the query as --query '*'.`);
+    }
+    throw new Error(`unknown argument: ${key}`);
+  }
+
+  if (args.project && !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(args.project)) {
+    throw new Error('project contains unsupported characters');
+  }
+  if (args.logstore && !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(args.logstore)) {
+    throw new Error('logstore contains unsupported characters');
+  }
+  if (!Number.isInteger(args.page) || args.page < 1) throw new Error('--page must be a positive integer');
+  if (!Number.isInteger(args.size) || args.size < 1 || args.size > 100) throw new Error('--size must be an integer between 1 and 100');
+  if (!Number.isInteger(args.pageSize) || args.pageSize < 1 || args.pageSize > 100) throw new Error('--page-size must be an integer between 1 and 100');
+  if (!Number.isFinite(args.timeout) || args.timeout < 1) throw new Error('--timeout must be a positive number');
+  if (command === 'auth') {
+    if (!args.project) args.project = DEFAULT_AUTH_PROJECT;
+    if (!args.logstore) args.logstore = DEFAULT_AUTH_LOGSTORE;
+  }
+
+  if (command === 'query' || command === 'fields') {
+    if (!args.project) throw new Error('--project is required');
+    if (!args.logstore) throw new Error('--logstore is required');
+    if (!args.query) throw new Error('--query is required');
+    validateTimeArgs(args);
+    if (args.continueAt && !parseContinueAt(args.continueAt)) {
+      throw new Error('--continue must be INDEX:OFFSET, for example --continue 3:1200');
+    }
+    args.extraFields = args.extraFields.filter((field) => !DEFAULT_OUTPUT_FIELD_SET.has(field));
+  }
+  if (command === 'logstores' && !args.project) throw new Error('--project is required');
+
+  return args;
+}
+
+function parseFieldList(value) {
+  const fields = [];
+  const seen = new Set();
+  for (const item of String(value || '').split(',')) {
+    const field = item.trim();
+    if (!field || seen.has(field)) continue;
+    seen.add(field);
+    fields.push(field);
+  }
+  return fields;
+}
+
+function parseContinueAt(value) {
+  const match = /^(\d+):(\d+)$/.exec(String(value || '').trim());
+  if (!match) return null;
+  const index = Number(match[1]);
+  const offset = Number(match[2]);
+  if (!Number.isInteger(index) || index < 1) return null;
+  if (!Number.isInteger(offset) || offset < 0) return null;
+  return { index, offset };
+}
+
+async function applyUserConfig(args, dependencies = {}) {
+  if (args.command !== 'auth') return args;
+  if (args.username) return args;
+  const readFile = dependencies.readFile || fs.readFile;
+  const readUsername = dependencies.readUsernameFromKeychainAccount || readUsernameFromKeychainAccount;
+  let payload;
+  try {
+    payload = JSON.parse(await readFile(args.userFile, 'utf8'));
+  } catch (error) {
+    payload = null;
+  }
+  if (payload && typeof payload.username === 'string' && payload.username.trim()) {
+    args.username = payload.username.trim();
+    return args;
+  }
+
+  const keychainUsername = await readUsername(args).catch(() => '');
+  if (keychainUsername) {
+    args.username = keychainUsername;
+  }
+  return args;
+}
+
+async function readUsernameFromKeychainAccount(args, dependencies = {}) {
+  const platform = dependencies.platform || process.platform;
+  const exec = dependencies.execFileAsync || execFileAsync;
+  if (platform !== 'darwin') return '';
+  for (const service of [args.keychainService, args.totpKeychainService]) {
+    if (!service) continue;
+    const username = await exec('security', [
+      'find-generic-password',
+      '-s', service,
+    ], { encoding: 'utf8', maxBuffer: 1024 * 1024 }).then(({ stdout, stderr }) => {
+      const match = /"acct"<blob>="([^"]+)"/.exec(String(stdout || stderr || ''));
+      return match && match[1] ? match[1].trim() : '';
+    }).catch(() => '');
+    if (username) return username;
+  }
+  return '';
+}
+
+function parseTime(value, key = 'time') {
+  const trimmed = String(value || '').trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})([ T])(\d{2}):(\d{2}):(\d{2})(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?$/.exec(trimmed);
+  if (!match) {
+    throw new Error(`${key} must be an explicit datetime like "2026-06-01 14:00:00" or "2026-06-01T14:00:00+08:00"`);
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[5]);
+  const minute = Number(match[6]);
+  const second = Number(match[7]);
+  const utcDay = new Date(Date.UTC(year, month - 1, day));
+  if (
+    utcDay.getUTCFullYear() !== year
+    || utcDay.getUTCMonth() !== month - 1
+    || utcDay.getUTCDate() !== day
+    || hour > 23
+    || minute > 59
+    || second > 59
+  ) {
+    throw new Error(`invalid ${key}: ${value}`);
+  }
+
+  const normalized = `${match[1]}-${match[2]}-${match[3]}T${match[5]}:${match[6]}:${match[7]}${match[8] || ''}`;
+  const millis = Date.parse(normalized);
+  if (Number.isNaN(millis)) {
+    throw new Error(`invalid ${key}: ${value}`);
+  }
+  return Math.floor(millis / 1000);
+}
+
+function parseDurationSeconds(value) {
+  const match = /^(\d+)(m|h|d|w|M|y)$/.exec(String(value || '').trim());
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isInteger(amount) || amount < 1) return null;
+  const unit = match[2];
+  const multipliers = {
+    m: 60,
+    h: 60 * 60,
+    d: 24 * 60 * 60,
+    w: 7 * 24 * 60 * 60,
+    M: 30 * 24 * 60 * 60,
+    y: 365 * 24 * 60 * 60,
+  };
+  return amount * multipliers[unit];
+}
+
+function startOfLocalDaySeconds(date) {
+  return Math.floor(new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() / 1000);
+}
+
+function parseRelativePoint(value, nowSeconds) {
+  const text = String(value || '').trim();
+  if (text === 'now' || text === 'now()') return nowSeconds;
+  const match = /^now(?:\(\))?-(\d+)(m|h|d|w|M|y)$/.exec(text);
+  if (!match) return null;
+  const duration = parseDurationSeconds(`${match[1]}${match[2]}`);
+  return nowSeconds - duration;
+}
+
+function parseTimeExpression(value) {
+  const text = String(value || '').trim();
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  const preset = /^last_(\d+)(m|h|d|w|M|y)$/.exec(text);
+  if (preset) {
+    const duration = parseDurationSeconds(`${preset[1]}${preset[2]}`);
+    return { from: nowSeconds - duration, to: nowSeconds };
+  }
+
+  if (text === 'today') {
+    return { from: startOfLocalDaySeconds(new Date(Date.now())), to: nowSeconds };
+  }
+  if (text === 'yesterday') {
+    const todayStart = startOfLocalDaySeconds(new Date(Date.now()));
+    return { from: todayStart - 24 * 60 * 60, to: todayStart };
+  }
+
+  if (text.includes('~')) {
+    const parts = text.split('~');
+    if (parts.length !== 2) throw new Error(`invalid --time expression: ${value}`);
+    const from = parseRelativePoint(parts[0], nowSeconds);
+    const to = parseRelativePoint(parts[1], nowSeconds);
+    if (from === null || to === null) throw new Error(`invalid --time expression: ${value}`);
+    if (from >= to) throw new Error('--time range start must be earlier than end');
+    return { from, to };
+  }
+
+  const point = parseRelativePoint(text, nowSeconds);
+  if (point !== null) return { from: point, to: nowSeconds };
+
+  throw new Error(`invalid --time expression: ${value}. Use last_1m|last_5m|last_15m|last_1h|last_4h|last_1d|last_3d|last_1w, now-15m~now-5m, now-1h, today, or yesterday.`);
+}
+
+function validateTimeArgs(args) {
+  if (args.time) {
+    if (args.from || args.to) throw new Error('--time cannot be combined with --from or --to');
+    parseTimeExpression(args.time);
+    return;
+  }
+  if (!args.from) throw new Error('--from is required unless --time is provided');
+  if (!args.to) throw new Error('--to is required unless --time is provided');
+  parseTime(args.from, '--from');
+  parseTime(args.to, '--to');
+}
+
+function resolveTimeRange(args) {
+  if (args.time) return parseTimeExpression(args.time);
+  return {
+    from: parseTime(args.from, '--from'),
+    to: parseTime(args.to, '--to'),
+  };
+}
+
+function buildConsoleUrl(args) {
+  if (!args.project || !args.logstore) return `${SLS_BASE_URL}/`;
+  return `${SLS_BASE_URL}/lognext/project/${encodeURIComponent(args.project)}/logsearch/${encodeURIComponent(args.logstore)}`;
+}
+
+function buildSigninUrl(args) {
+  const callback = buildConsoleUrl(args);
+  const params = new URLSearchParams({
+    callback,
+    oauth_callback: callback,
+    // 阿里跳转 SPM 来源参数，不是凭证。
+    spma: ALIYUN_SIGNIN_SPM_A,
+    spmb: ALIYUN_SIGNIN_SPM_B,
+  });
+  return `https://signin.aliyun.com/${args.signinDomain}/login.htm?${params.toString()}#/main`;
+}
+
+function isAliyunLoginUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.hostname === 'account.aliyun.com' || url.hostname === 'signin.aliyun.com';
+  } catch (error) {
+    return false;
+  }
+}
+
+// Browser lifecycle for auth
+async function findPlaywrightModulePath() {
+  const candidates = [];
+  const localPackage = path.join(SKILL_ROOT, 'node_modules', 'playwright', 'package.json');
+  const npxRoot = path.join(os.homedir(), '.npm', '_npx');
+
+  try {
+    const stat = await fs.stat(localPackage);
+    candidates.push({ packagePath: localPackage, mtimeMs: stat.mtimeMs });
+  } catch (error) {
+  }
+
+  const entries = await fs.readdir(npxRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const packagePath = path.join(npxRoot, entry.name, 'node_modules', 'playwright', 'package.json');
+    try {
+      const stat = await fs.stat(packagePath);
+      candidates.push({ packagePath, mtimeMs: stat.mtimeMs });
+    } catch (error) {
+    }
+  }
+
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (!candidates.length) {
+    throw new Error('Playwright library package not found. Install it first, or run it once via npx playwright.');
+  }
+  return path.dirname(candidates[0].packagePath);
+}
+
+async function newBrowserContext(args) {
+  const playwrightModulePath = await findPlaywrightModulePath();
+  const { chromium } = require(playwrightModulePath);
+  const tempRoot = args.profileDir ? '' : await fs.mkdtemp(path.join(os.tmpdir(), 'alilog-auth-'));
+  const profileDir = args.profileDir || path.join(tempRoot, 'profile');
+  try {
+    await fs.mkdir(profileDir, { recursive: true });
+    const context = await chromium.launchPersistentContext(profileDir, {
+      channel: 'chrome',
+      headless: false,
+      chromiumSandbox: true,
+    });
+    return { context, tempRoot };
+  } catch (error) {
+    if (tempRoot) await fs.rm(tempRoot, { recursive: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function closeBrowserContext(browser) {
+  if (!browser || !browser.context) return;
+  const context = browser.context;
+  browser.context = null;
+  await context.close();
+}
+
+async function cleanupBrowserProfile(browser) {
+  if (!browser || !browser.tempRoot) return;
+  const tempRoot = browser.tempRoot;
+  browser.tempRoot = '';
+  await fs.rm(tempRoot, { recursive: true });
+}
+
+function cleanupBrowserProfileDetached(tempRoot) {
+  if (!tempRoot) return;
+  // 默认临时 profile 是一次性状态；auth 已经写好后，清理不再阻塞命令返回。
+  const child = spawn(process.execPath, [
+    '-e',
+    [
+      "const fs = require('node:fs/promises');",
+      "const os = require('node:os');",
+      "const path = require('node:path');",
+      '',
+      '(async () => {',
+      "  const dir = path.resolve(process.argv[1] || '');",
+      '  const tmp = path.resolve(os.tmpdir());',
+      '  const basename = path.basename(dir);',
+      "  if (!dir.startsWith(tmp + path.sep) || !/^alilog-auth-[^/]+$/.test(basename)) return;",
+      '  const delays = [500, 1000, 2000, 4000, 8000, 8000];',
+      '  for (const delay of delays) {',
+      '    await new Promise((resolve) => setTimeout(resolve, delay));',
+      '    try {',
+      '      await fs.rm(dir, { recursive: true });',
+      '      return;',
+      '    } catch (error) {',
+      '    }',
+      '  }',
+    '})().catch(() => {});',
+    ].join('\n'),
+    tempRoot,
+  ], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+}
+
+async function closeAndCleanupBrowser(browser) {
+  try {
+    await closeBrowserContext(browser);
+  } finally {
+    await cleanupBrowserProfile(browser);
+  }
+}
+
+function closeAndCleanupBrowserDetached(browser) {
+  if (!browser) return;
+  const tempRoot = browser.tempRoot;
+  browser.tempRoot = '';
+  closeBrowserContext(browser).catch(() => {});
+  cleanupBrowserProfileDetached(tempRoot);
+}
+
+async function writeStdoutLine(line) {
+  await new Promise((resolve) => {
+    process.stdout.write(`${line}\n`, resolve);
+  });
+}
+
+function debugAuth(args, message) {
+  if (!args.debug) return;
+  console.log(`auth: ${message}`);
+}
+
+// Login page navigation and local credential sources
+async function openLoginPage(page, context, args) {
+  if (args.forceLogin) {
+    await clearLoginCookies(context, args);
+  }
+  // 直接进入 RAM 登录页，避免先到 SLS 再被阿里云跳转到 account/signin。
+  try {
+    await page.goto(buildSigninUrl(args), { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+  } catch (error) {
+    throw new Error(`failed to open Aliyun login page: ${error && error.message ? error.message : String(error)}`);
+  }
+  if (page.url().startsWith(`${SLS_BASE_URL}/lognext/project/`) || page.url().startsWith(`${SLS_BASE_URL}/console/`)) {
+    return;
+  }
+  if (args.noAutoFill && isAliyunLoginUrl(page.url())) {
+    await injectLoginGuidanceNotice(page, loginManualGuidanceMessage()).catch(() => {});
+  }
+}
+
+async function restartLoginFlowAfterCaptcha(page, args) {
+  await page.goto('about:blank', { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+  await page.goto(buildSigninUrl(args), { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+}
+
+async function clearLoginCookies(context, args) {
+  await context.clearCookies();
+  debugAuth(args, 'cleared cookies');
+}
+
+async function readPasswordFromKeychain(args, dependencies = {}) {
+  const env = dependencies.env || process.env;
+  const platform = dependencies.platform || process.platform;
+  const exec = dependencies.execFileAsync || execFileAsync;
+  if (env.ALILOG_PASSWORD) return env.ALILOG_PASSWORD;
+  if (platform !== 'darwin') {
+    throw new Error('ALILOG_PASSWORD is required on non-macOS platforms');
+  }
+  try {
+    const { stdout } = await exec('security', [
+      'find-generic-password',
+      '-s', args.keychainService,
+      '-a', args.username,
+      '-w',
+    ], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    const password = stdout.replace(/\r?\n$/, '');
+    if (!password) throw new Error('empty password from keychain');
+    return password;
+  } catch (error) {
+    throw new Error(`failed to read password from Keychain service=${args.keychainService}`);
+  }
+}
+
+async function readTotpSeedFromKeychain(args, dependencies = {}) {
+  const env = dependencies.env || process.env;
+  const platform = dependencies.platform || process.platform;
+  const exec = dependencies.execFileAsync || execFileAsync;
+  if (env.ALILOG_TOTP_SEED) return env.ALILOG_TOTP_SEED;
+  if (platform !== 'darwin') {
+    throw new Error('ALILOG_TOTP_SEED is required on non-macOS platforms');
+  }
+  try {
+    const { stdout } = await exec('security', [
+      'find-generic-password',
+      '-s', args.totpKeychainService,
+      '-a', args.username,
+      '-w',
+    ], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    const seed = stdout.replace(/\r?\n$/, '');
+    if (!seed) throw new Error('empty TOTP seed from keychain');
+    return seed;
+  } catch (error) {
+    throw new Error(`failed to read TOTP seed from Keychain service=${args.totpKeychainService}`);
+  }
+}
+
+function normalizeTotpSeed(seed) {
+  const value = String(seed || '').trim();
+  if (value.startsWith('otpauth://')) {
+    const url = new URL(value);
+    const secret = url.searchParams.get('secret');
+    if (!secret) throw new Error('otpauth URL is missing secret');
+    return secret;
+  }
+  return value;
+}
+
+function decodeBase32(value) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const cleaned = normalizeTotpSeed(value).toUpperCase().replace(/[\s=-]/g, '');
+  if (!cleaned) throw new Error('empty TOTP seed');
+
+  let bits = 0;
+  let bitLength = 0;
+  const bytes = [];
+  for (const char of cleaned) {
+    const index = alphabet.indexOf(char);
+    if (index < 0) throw new Error('TOTP seed must be base32');
+    bits = (bits << 5) | index;
+    bitLength += 5;
+    if (bitLength >= 8) {
+      bytes.push((bits >> (bitLength - 8)) & 0xff);
+      bitLength -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+function generateTotp(seed, nowMillis = Date.now()) {
+  const key = decodeBase32(seed);
+  const step = Math.floor(nowMillis / 1000 / DEFAULT_TOTP_PERIOD_SECONDS);
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(step));
+
+  const digest = crypto.createHmac('sha1', key).update(counter).digest();
+  const offset = digest[digest.length - 1] & 0x0f;
+  const code = (
+    ((digest[offset] & 0x7f) << 24)
+    | ((digest[offset + 1] & 0xff) << 16)
+    | ((digest[offset + 2] & 0xff) << 8)
+    | (digest[offset + 3] & 0xff)
+  ) % (10 ** DEFAULT_TOTP_DIGITS);
+  const remainingSeconds = DEFAULT_TOTP_PERIOD_SECONDS - Math.floor(nowMillis / 1000) % DEFAULT_TOTP_PERIOD_SECONDS;
+
+  return {
+    code: String(code).padStart(DEFAULT_TOTP_DIGITS, '0'),
+    step,
+    remaining_seconds: remainingSeconds,
+  };
+}
+
+async function fillInput(locator, value) {
+  await locator.click();
+  await locator.fill(String(value));
+}
+
+// Login auto-fill policy
+async function prepareAutoFillPlan(args) {
+  const plan = {
+    username: args.username || '',
+    password: null,
+    totpSeed: null,
+    passwordChecked: false,
+    totpChecked: false,
+  };
+  await refreshAutoFillPlanForUsername(plan, args, plan.username);
+  return plan;
+}
+
+async function refreshAutoFillPlanForUsername(plan, args, username) {
+  if (username && !plan.username) plan.username = username;
+  if (!plan.passwordChecked && (process.env.ALILOG_PASSWORD || plan.username)) {
+    plan.passwordChecked = true;
+    try {
+      plan.password = await readPasswordFromKeychain({ ...args, username: plan.username });
+    } catch (error) {
+      plan.password = null;
+    }
+  }
+  if (!plan.totpChecked && (process.env.ALILOG_TOTP_SEED || plan.username)) {
+    plan.totpChecked = true;
+    try {
+      plan.totpSeed = await readTotpSeedFromKeychain({ ...args, username: plan.username });
+    } catch (error) {
+      plan.totpSeed = null;
+    }
+  }
+  return plan;
+}
+
+function isSlsConsoleUrl(value) {
+  return String(value || '').startsWith(`${SLS_BASE_URL}/lognext/project/`)
+    || String(value || '').startsWith(`${SLS_BASE_URL}/console/`);
+}
+
+function createAutoLoginState(args, autoFillPlan) {
+  return {
+    deadline: Date.now() + args.timeout * 1000,
+    autoFillPlan,
+    username: {
+      emptySince: 0,
+      initialHandled: false,
+      reportedMissing: false,
+      emptyRefillDelayMs: 1000,
+    },
+    credentials: {
+      reportedPasswordUnavailable: false,
+      reportedTotpUnavailable: false,
+      phoneCodeRequired: false,
+    },
+    totp: {
+      lastScriptCode: '',
+      lastScriptStep: null,
+      minRemainingSeconds: 6,
+    },
+    captcha: {
+      recoveryCount: 0,
+    },
+    navigationVersion: 0,
+    guidanceNotice: {
+      message: '',
+      navigationVersion: -1,
+    },
+    pollMs: 500,
+  };
+}
+
+function trackMainFrameNavigation(page, state) {
+  const onNavigated = (frame) => {
+    if (frame !== page.mainFrame()) return;
+    state.navigationVersion += 1;
+  };
+  page.on('framenavigated', onNavigated);
+  return () => page.off('framenavigated', onNavigated);
+}
+
+async function handleCaptchaPolicy(page, args, state) {
+  if (!await hasAliyunCaptcha(page)) return 'none';
+
+  if (state.captcha.recoveryCount < DEFAULT_CAPTCHA_REFRESH_LIMIT) {
+    debugAuth(args, 'captcha detected; restarting login flow');
+    try {
+      await restartLoginFlowAfterCaptcha(page, args);
+      state.captcha.recoveryCount += 1;
+      debugAuth(args, `login flow restarted (${state.captcha.recoveryCount}/${DEFAULT_CAPTCHA_REFRESH_LIMIT})`);
+      return 'restarted';
+    } catch (error) {
+      debugAuth(args, `login flow restart failed: ${error && error.message ? error.message : String(error)}`);
+      if (isAliyunLoginUrl(page.url())) {
+        await injectLoginGuidanceNotice(page, loginRestartFailedManualGuidanceMessage()).catch(() => {});
+      }
+      debugAuth(args, 'waiting for manual login');
+      return 'manual';
+    }
+  }
+
+  debugAuth(args, 'captcha detected; switched to manual login');
+  await injectLoginGuidanceNotice(page, loginCaptchaManualGuidanceMessage()).catch(() => {});
+  debugAuth(args, 'waiting for manual login');
+  return 'manual';
+}
+
+async function handleUsernamePolicy(page, args, state) {
+  const usernameInput = await findFirstVisibleLocatorNow(page, usernameInputSelectors());
+  if (!usernameInput) return;
+
+  const currentUsername = await safeInputValue(usernameInput);
+  await refreshAutoFillPlanForUsername(state.autoFillPlan, args, currentUsername);
+
+  const plannedUsername = String(state.autoFillPlan.username || '').trim();
+  const normalizedUsername = String(currentUsername || '').trim();
+  if (plannedUsername && !state.username.initialHandled) {
+    state.username.initialHandled = true;
+    if (normalizedUsername !== plannedUsername) {
+      await fillInput(usernameInput, plannedUsername);
+      debugAuth(args, 'username corrected');
+      state.username.emptySince = 0;
+    }
+  } else if (!normalizedUsername) {
+    if (!state.username.emptySince) state.username.emptySince = Date.now();
+    if (plannedUsername && Date.now() - state.username.emptySince >= state.username.emptyRefillDelayMs) {
+      await fillInput(usernameInput, plannedUsername);
+      debugAuth(args, 'username filled');
+      state.username.emptySince = 0;
+    }
+  } else {
+    state.username.emptySince = 0;
+  }
+
+  if (!currentUsername && !state.autoFillPlan.username && !state.username.reportedMissing) {
+    debugAuth(args, 'username unavailable');
+    state.username.reportedMissing = true;
+  }
+}
+
+async function handlePasswordPolicy(page, args, state) {
+  const passwordInput = await findFirstVisibleLocatorNow(page, passwordInputSelectors());
+  if (!passwordInput) return;
+
+  if (!await safeInputValue(passwordInput)) {
+    if (state.autoFillPlan.password) {
+      await fillInput(passwordInput, state.autoFillPlan.password);
+      debugAuth(args, 'password filled');
+    } else if (!state.credentials.reportedPasswordUnavailable) {
+      debugAuth(args, 'password unavailable');
+      state.credentials.reportedPasswordUnavailable = true;
+    }
+  } else if (!state.autoFillPlan.password && !state.credentials.reportedPasswordUnavailable) {
+    debugAuth(args, 'password unavailable');
+    state.credentials.reportedPasswordUnavailable = true;
+  }
+}
+
+async function handleTotpPolicy(page, args, state) {
+  const totpInput = await findFirstVisibleLocatorNow(page, totpInputSelectors(args));
+  if (!totpInput) return;
+
+  const currentTotp = await safeInputValue(totpInput);
+  if (!state.autoFillPlan.totpSeed) {
+    if (!currentTotp && !state.credentials.reportedTotpUnavailable) {
+      debugAuth(args, 'totp unavailable');
+      state.credentials.reportedTotpUnavailable = true;
+    }
+    return;
+  }
+
+  let totp = generateTotp(state.autoFillPlan.totpSeed);
+  const isScriptTotp = currentTotp && currentTotp === state.totp.lastScriptCode;
+  if ((!currentTotp || isScriptTotp) && totp.remaining_seconds <= state.totp.minRemainingSeconds) {
+    // 安全码快过期时等下一周期，避免填入马上失效的验证码。
+    await page.waitForTimeout((totp.remaining_seconds + 1) * 1000);
+    totp = generateTotp(state.autoFillPlan.totpSeed);
+  }
+  const scriptTotpShouldRefresh = isScriptTotp
+    && (totp.step !== state.totp.lastScriptStep || totp.remaining_seconds <= state.totp.minRemainingSeconds);
+
+  if (!currentTotp || scriptTotpShouldRefresh) {
+    await fillInput(totpInput, totp.code);
+    debugAuth(args, state.totp.lastScriptCode ? 'totp refreshed' : 'totp filled');
+    state.totp.lastScriptCode = totp.code;
+    state.totp.lastScriptStep = totp.step;
+  }
+}
+
+async function updatePhoneCodeRequirement(page, args, state) {
+  if (state.credentials.phoneCodeRequired) return;
+  if (!await findFirstVisibleLocatorNow(page, phoneCodeInputSelectors())) return;
+  state.credentials.phoneCodeRequired = true;
+  debugAuth(args, 'phone code required');
+}
+
+function buildGuidanceState(state) {
+  return {
+    canFillUsername: Boolean(state.autoFillPlan.username),
+    canFillPassword: Boolean(state.autoFillPlan.password),
+    canFillTotp: Boolean(state.autoFillPlan.totpSeed),
+    missingUsername: state.username.reportedMissing,
+    missingPassword: state.credentials.reportedPasswordUnavailable,
+    missingTotp: state.credentials.reportedTotpUnavailable,
+    phoneCodeRequired: state.credentials.phoneCodeRequired,
+  };
+}
+
+async function maybeInjectLoginGuidance(page, currentUrl, state) {
+  if (!isAliyunLoginUrl(currentUrl)) return;
+  const guidanceMessage = loginAutoFillGuidanceMessage(buildGuidanceState(state));
+  if (!shouldInjectLoginGuidanceNotice(state.guidanceNotice, guidanceMessage, state.navigationVersion)) return;
+  try {
+    await injectLoginGuidanceNotice(page, guidanceMessage);
+    state.guidanceNotice.message = guidanceMessage;
+    state.guidanceNotice.navigationVersion = state.navigationVersion;
+  } catch (error) {
+  }
+}
+
+async function runAutoFillCycle(page, args, state, currentUrl) {
+  const captchaResult = await handleCaptchaPolicy(page, args, state);
+  if (captchaResult === 'restarted' || captchaResult === 'manual') return captchaResult;
+
+  await handleUsernamePolicy(page, args, state);
+  await handlePasswordPolicy(page, args, state);
+  await handleTotpPolicy(page, args, state);
+  await updatePhoneCodeRequirement(page, args, state);
+  await maybeInjectLoginGuidance(page, currentUrl, state);
+  return 'continue';
+}
+
+async function autoLoginAliyun(page, args) {
+  const state = createAutoLoginState(args, await prepareAutoFillPlan(args));
+  const stopNavigationTracking = trackMainFrameNavigation(page, state);
+
+  debugAuth(args, 'auto-fill monitor started');
+
+  try {
+    while (Date.now() < state.deadline) {
+      const currentUrl = page.url();
+      if (isSlsConsoleUrl(currentUrl)) return;
+
+      const cycleResult = await runAutoFillCycle(page, args, state, currentUrl);
+      if (cycleResult === 'manual') return;
+      if (cycleResult === 'restarted') continue;
+
+      await page.waitForTimeout(state.pollMs);
+    }
+  } finally {
+    stopNavigationTracking();
+  }
+
+  throw new Error('auto-fill monitor timed out; complete Aliyun login in the opened browser and retry');
+}
+
+function shouldInjectLoginGuidanceNotice(state, message, navigationVersion) {
+  return state.message !== message || state.navigationVersion !== navigationVersion;
+}
+
+// Captcha detection policy
+async function hasAliyunCaptcha(page) {
+  const frames = typeof page.frames === 'function' ? page.frames() : [page];
+  for (const frame of frames) {
+    try {
+      if (await frame.evaluate((detectorSource) => {
+        const detector = (0, eval)(`(${detectorSource})`);
+
+        function isVisible(element) {
+          if (!element) return false;
+          const style = window.getComputedStyle(element);
+          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }
+
+        function elementText(element) {
+          return String(element && element.textContent ? element.textContent : '');
+        }
+
+        function elementHref(element) {
+          if (!element) return '';
+          return String(
+            element.getAttribute('href')
+            || element.href
+            || element.getAttribute('src')
+            || element.src
+            || '',
+          );
+        }
+
+        return detector(document, isVisible, elementText, elementHref);
+      }, detectAliyunCaptchaInDocument.toString())) return true;
+    } catch (error) {
+    }
+  }
+  return false;
+}
+
+function detectAliyunCaptchaInDocument(document, isVisible, elementText, elementHref) {
+  const captchaElements = [
+    document.querySelector('#nocaptcha.nc-container'),
+    document.querySelector('#nocaptcha .nc_wrapper'),
+    document.querySelector('#nocaptcha .nc_scale'),
+    document.querySelector('#nocaptcha .btn_slide[aria-label="滑块"][role="button"]'),
+    document.querySelector('#nc_1_n1z.btn_slide[aria-label="滑块"]'),
+    document.querySelector('#nc_1__scale_text .nc-lang-cnt'),
+  ].filter(Boolean);
+
+  for (const element of captchaElements) {
+    if (isVisible(element)) return true;
+  }
+
+  const captchaFrame = document.querySelector('iframe#baxia-dialog-content')
+    || document.querySelector('iframe[src*="_____tmd_____"]')
+    || document.querySelector('iframe[src*="x5secdata"]')
+    || document.querySelector('iframe[src*="action=captcha"]')
+    || document.querySelector('iframe[src*="pureCaptcha=true"]');
+  const frameSrc = elementHref(captchaFrame);
+  if (isVisible(captchaFrame) && (
+    frameSrc.includes('x5secdata')
+    || frameSrc.includes('_____tmd_____')
+    || frameSrc.includes('action=captcha')
+    || frameSrc.includes('pureCaptcha=true')
+  )) {
+    return true;
+  }
+
+  const feedbackButton = document.querySelector('.bx-pu-qrcode-wrap #bx-feedback-btn');
+  const href = elementHref(feedbackButton);
+  if (isVisible(feedbackButton) && (href.includes('x5secdata') || href.includes('_____tmd_____'))) {
+    return true;
+  }
+
+  return false;
+}
+
+function loginAutoFillGuidanceMessage(state = {}) {
+  const fields = [
+    ['账号', state.canFillUsername && !state.missingUsername],
+    ['密码', state.canFillPassword && !state.missingPassword],
+    ['安全码', state.canFillTotp && !state.missingTotp],
+  ];
+  const autoFields = fields.filter(([, canFill]) => canFill).map(([name]) => name);
+  const manualFields = fields.filter(([, canFill]) => !canFill).map(([name]) => name);
+  if (autoFields.length) {
+    const action = `${autoFields.join('、')}会在输入框为空时自动填充`;
+    const manualItems = manualFields.length ? [`${manualFields.join('、')}请手动填写`] : [];
+    if (state.phoneCodeRequired) manualItems.push('手机验证码请手动获取并填写');
+    const manual = manualItems.length ? `；${manualItems.join('、')}` : '';
+    const lines = [
+      '登录辅助已就绪',
+      `${action}${manual}`,
+      '按钮需要你点击；你自己填写时，脚本不会拦截或覆盖。',
+    ];
+    if (manualItems.length) lines.push('自动填充配置见 references/first-use.md。');
+    return lines.join('\n');
+  }
+  return [
+    '登录辅助准备完成',
+    '未读取到可自动填充的账号、密码、安全码',
+    '请手动填写并点击登录/提交；脚本会在登录成功后保存 SLS 登录态。',
+    '自动填充配置见 references/first-use.md。',
+  ].join('\n');
+}
+
+function loginManualGuidanceMessage() {
+  return [
+    '手动登录模式',
+    '请填写账号、密码、安全码并点击登录/提交',
+    '脚本会在登录成功后保存 SLS 登录态。',
+  ].join('\n');
+}
+
+function loginCaptchaManualGuidanceMessage() {
+  return [
+    '检测到阿里云滑块验证，自动恢复已尝试 2 次仍失败。',
+    '已停止自动填充，请完整手动登录。',
+    '登录成功后脚本会继续保存 SLS 登录态；不要关闭此窗口。',
+  ].join('\n');
+}
+
+function loginRestartFailedManualGuidanceMessage() {
+  return [
+    '检测到阿里云滑块验证，但自动重开登录页失败。',
+    '已停止自动填充，请手动刷新或打开阿里云登录页并完整登录。',
+    '登录成功后脚本会继续保存 SLS 登录态；不要关闭此窗口。',
+  ].join('\n');
+}
+
+async function injectLoginGuidanceNotice(page, message) {
+  await page.evaluate((noticeMessage) => {
+    if (!document.body) return;
+    const noticeId = 'alilog-login-guidance-notice';
+    let notice = document.querySelector(`#${noticeId}`);
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.id = noticeId;
+      notice.style.position = 'fixed';
+      notice.style.top = '18px';
+      notice.style.left = '50%';
+      notice.style.transform = 'translateX(-50%)';
+      notice.style.width = '470px';
+      notice.style.maxWidth = 'calc(100% - 32px)';
+      notice.style.zIndex = '2147483646';
+      notice.style.padding = '16px 18px 16px 20px';
+      notice.style.background = '#fff4cc';
+      notice.style.border = '2px solid #f59e0b';
+      notice.style.borderLeft = '9px solid #ea580c';
+      notice.style.borderRadius = '8px';
+      notice.style.color = '#332100';
+      notice.style.fontSize = '17px';
+      notice.style.lineHeight = '27px';
+      notice.style.fontWeight = '750';
+      notice.style.whiteSpace = 'pre-line';
+      notice.style.boxShadow = '0 12px 30px rgba(71, 42, 0, 0.24)';
+      notice.style.boxSizing = 'border-box';
+      document.body.prepend(notice);
+    }
+    notice.textContent = noticeMessage;
+    if (!('alilogOriginalPaddingTop' in document.body.dataset)) {
+      document.body.dataset.alilogOriginalPaddingTop = document.body.style.paddingTop || '';
+    }
+    const originalPadding = parseFloat(document.body.dataset.alilogOriginalPaddingTop || '0') || 0;
+    document.body.style.paddingTop = `${originalPadding + notice.offsetHeight}px`;
+  }, message);
+}
+
+function usernameInputSelectors() {
+  return [
+    '#loginName',
+    'input[name="username"]',
+    'input[autocomplete="username"]',
+  ];
+}
+
+function passwordInputSelectors() {
+  return [
+    '#loginPassword',
+    'input[name="password"]',
+    'input[type="password"]',
+    'input[autocomplete="current-password"]',
+  ];
+}
+
+function totpInputSelectors(args) {
+  return compact([
+    args.totpInputSelector,
+    'input[placeholder="请输入 6 位数字安全码"]',
+  ]);
+}
+
+function phoneCodeInputSelectors() {
+  return [
+    '#PHONE_CODE',
+    'input[placeholder="请输入 6 位数字验证码"]',
+  ];
+}
+
+// DOM helpers for login policy
+async function safeInputValue(locator) {
+  try {
+    return await locator.inputValue({ timeout: 0 });
+  } catch (error) {
+    return '';
+  }
+}
+
+function compact(values) {
+  return values.filter(Boolean);
+}
+
+async function findFirstVisibleLocatorNow(page, selectors) {
+  // 只读取当前 DOM 状态；页面阶段变化交给外层短 tick 处理，不在 selector 内部等待。
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    try {
+      if (await locator.isVisible({ timeout: 0 })) return locator;
+    } catch (error) {
+    }
+  }
+  return null;
+}
+
+function normalizeResult(data) {
+  if (!data || typeof data !== 'object') return data;
+  const logs = extractPayloadLogs(data);
+  const count = Array.isArray(logs) ? logs.length : undefined;
+  return {
+    ok: data.success !== false,
+    count,
+    raw: data,
+  };
+}
+
+function buildLogQuery(args) {
+  return args.query;
+}
+
+function buildQueryBody(args) {
+  const { from, to } = resolveTimeRange(args);
+  if (from >= to) throw new Error('--from must be earlier than --to');
+  const query = buildLogQuery(args);
+  return {
+    scope: {
+      project: args.project,
+      logstore: args.logstore,
+      from,
+      to,
+      query,
+      page: args.page,
+      size: args.size,
+    },
+    body: new URLSearchParams({
+      LogStoreName: args.logstore,
+      ProjectName: args.project,
+      from: String(from),
+      query,
+      to: String(to),
+      Page: String(args.page),
+      Size: String(args.size),
+    }).toString(),
+  };
+}
+
+function buildLogstoresRequest(args) {
+  const url = new URL(`${SLS_BASE_URL}${SLS_LOGSTORE_LIST_PATH}`);
+  url.searchParams.set('IsListOnly', '1');
+  url.searchParams.set('LogStoreName', args.keyword || '');
+  url.searchParams.set('Page', String(args.page));
+  url.searchParams.set('Size', String(args.pageSize));
+  url.searchParams.set('ProjectName', args.project);
+  url.searchParams.set('telemetryType', 'None');
+  return url.toString();
+}
+
+function buildCookieHeader(cookies) {
+  return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+}
+
+// Query auth file and SLS request
+async function writeAuthFile(args, page, context, csrfToken) {
+  const cookies = await context.cookies(SLS_BASE_URL);
+  const cookieHeader = buildCookieHeader(cookies);
+  if (!cookieHeader) throw new Error('failed to collect Aliyun SLS cookies');
+
+  const payload = {
+    generated_at: new Date().toISOString(),
+    base_url: SLS_BASE_URL,
+    project: args.project,
+    logstore: args.logstore,
+    referer: buildConsoleUrl(args),
+    cookie: cookieHeader,
+    csrf_token: csrfToken,
+    cookie_names: cookies.map((cookie) => cookie.name),
+  };
+  await fs.mkdir(path.dirname(args.authFile), { recursive: true });
+  await fs.writeFile(args.authFile, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await fs.chmod(args.authFile, 0o600).catch(() => {});
+}
+
+async function readAuthFile(args) {
+  let payload;
+  try {
+    payload = JSON.parse(await fs.readFile(args.authFile, 'utf8'));
+  } catch (error) {
+    throw new Error(`failed to read auth file; run scripts/alilog auth first: ${args.authFile}`);
+  }
+  if (!payload.cookie || !payload.csrf_token) {
+    throw new Error(`auth file is missing cookie or csrf_token; refresh it with scripts/alilog auth: ${args.authFile}`);
+  }
+  return payload;
+}
+
+async function queryLogsWithAuthFile(args) {
+  const auth = await readAuthFile(args);
+  const request = buildQueryBody(args);
+  const response = await fetchWithTimeout(`${SLS_BASE_URL}${SLS_GET_LOGS_INDEX_PATH}`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/x-www-form-urlencoded',
+      cookie: auth.cookie,
+      origin: SLS_BASE_URL,
+      referer: auth.referer || buildConsoleUrl(args),
+      'x-csrf-token': auth.csrf_token,
+    },
+    body: request.body,
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch (error) {
+    payload = { parse_error: error.message, text };
+  }
+  const code = payload && payload.code ? String(payload.code) : '';
+  if (response.status === 401 || response.status === 403 || code === 'ConsoleNeedLogin') {
+    throw new Error(`auth expired or invalid (${code || response.status}); run scripts/alilog auth`);
+  }
+  return {
+    scope: request.scope,
+    response: {
+      status: response.status,
+      ok: response.ok,
+    },
+    result: normalizeResult(payload),
+  };
+}
+
+async function listLogstoresWithAuthFile(args) {
+  const auth = await readAuthFile(args);
+  const response = await fetchWithTimeout(buildLogstoresRequest(args), {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      cookie: auth.cookie,
+      referer: auth.referer || `${SLS_BASE_URL}/`,
+    },
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch (error) {
+    payload = { parse_error: error.message, text };
+  }
+  const code = payload && payload.code ? String(payload.code) : '';
+  if (response.status === 401 || response.status === 403 || code === 'ConsoleNeedLogin') {
+    throw new Error(`auth expired or invalid (${code || response.status}); run scripts/alilog auth`);
+  }
+  if (!response.ok) {
+    throw new Error(`logstores request failed: status=${response.status}`);
+  }
+  return payload;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_QUERY_FETCH_TIMEOUT_MS, fetchImpl = fetch) {
+  const controller = new AbortController();
+  const callerSignal = options.signal;
+  let timedOut = false;
+  const abortFromCaller = () => {
+    controller.abort(callerSignal.reason);
+  };
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      abortFromCaller();
+    } else {
+      callerSignal.addEventListener('abort', abortFromCaller, { once: true });
+    }
+  }
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetchImpl(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error && error.name === 'AbortError' && timedOut) {
+      throw new Error(`SLS query request timed out after ${Math.ceil(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    if (callerSignal) {
+      callerSignal.removeEventListener('abort', abortFromCaller);
+    }
+  }
+}
+
+function extractPayloadLogs(payload) {
+  if (!payload || typeof payload !== 'object') return [];
+  if (Array.isArray(payload.logs)) return payload.logs;
+  if (payload.data && typeof payload.data === 'object' && Array.isArray(payload.data.logs)) return payload.data.logs;
+  if (Array.isArray(payload.data)) return payload.data;
+  if (Array.isArray(payload.items)) return payload.items;
+  if (Array.isArray(payload.results)) return payload.results;
+  return [];
+}
+
+// Query output formatting
+function extractLogs(output) {
+  const raw = output && output.result ? output.result.raw : null;
+  return extractPayloadLogs(raw);
+}
+
+function fieldValue(log, field) {
+  if (!log || typeof log !== 'object') return '';
+  const value = log[field];
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
+function displayBody(log) {
+  const message = fieldValue(log, 'message');
+  if (message) return { label: 'message', value: message };
+  const content = fieldValue(log, 'content');
+  if (content) return { label: 'content', value: content };
+  const summary = fallbackSummaryValue(log);
+  if (summary) return { label: 'summary', value: summary };
+  const result = resultSummaryValue(log);
+  if (result) return { label: 'result', value: result };
+  return { label: 'message', value: '' };
+}
+
+function containerName(log) {
+  return compactDisplayText(fieldValue(log, '_container_name_')) || '-';
+}
+
+function fallbackSummaryValue(log) {
+  if (!log || typeof log !== 'object') return '';
+  const parts = [];
+  for (const field of FALLBACK_SUMMARY_FIELDS) {
+    const value = fieldValue(log, field);
+    if (!value) continue;
+    parts.push(`${field}=${value}`);
+    if (parts.length >= 8) break;
+  }
+  return parts.join(' ');
+}
+
+function resultSummaryValue(log) {
+  if (!log || typeof log !== 'object') return '';
+  const parts = [];
+  for (const field of Object.keys(log)) {
+    if (RESULT_EXCLUDED_FIELDS.has(field)) continue;
+    if (field.startsWith('__tag__:')) continue;
+    const value = fieldValue(log, field);
+    if (!value) continue;
+    parts.push(`${field}=${value}`);
+    if (parts.length >= 8) break;
+  }
+  return parts.join(' ');
+}
+
+function isMybatisSqlLine(value) {
+  const text = String(value || '');
+  return /\bCreating a new SqlSession\b/.test(text)
+    || /\bSqlSession\b/.test(text)
+    || /\bJDBC Connection\b/.test(text)
+    || /==>\s+Preparing:/.test(text)
+    || /==>\s+Parameters:/.test(text)
+    || /<==\s+Columns:/.test(text)
+    || /<==\s+Row:/.test(text)
+    || /<==\s+Total:/.test(text)
+    || /<==\s+Updates:/.test(text)
+    || /\bClosing non transactional SqlSession\b/.test(text);
+}
+
+function foldMybatisSqlText(value) {
+  const lines = String(value || '').split(/\r?\n/);
+  const folded = [];
+  let blockLines = [];
+
+  function flushBlock() {
+    if (!blockLines.length) return;
+    const marker = `[sql x${blockLines.length}]`;
+    const original = blockLines.join('\n');
+    if (marker.length < original.length) {
+      folded.push(marker);
+    } else {
+      folded.push(...blockLines);
+    }
+    blockLines = [];
+  }
+
+  for (const line of lines) {
+    if (isMybatisSqlLine(line)) {
+      blockLines.push(line);
+      continue;
+    }
+    flushBlock();
+    folded.push(line);
+  }
+  flushBlock();
+  return folded.join('\n');
+}
+
+function compactDisplayText(value) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trim().replace(/[^\S\n]+/g, ' '))
+    .join('\n')
+    .replace(/\n+/g, '\n')
+    .trim();
+}
+
+function formatErrorMessage(value) {
+  const text = compactDisplayText(value);
+  if (text.length <= ERROR_MESSAGE_CHAR_LIMIT) return text;
+  return `${text.slice(0, ERROR_MESSAGE_CHAR_LIMIT)}... [message truncated]`;
+}
+
+function renderContent(value, args, logIndex, offset, limit = DEFAULT_LOG_CHAR_LIMIT) {
+  const rawText = args.expandSql ? String(value || '') : foldMybatisSqlText(value);
+  const text = compactDisplayText(rawText);
+  const fragment = text.slice(offset, offset + limit);
+  const nextOffset = offset + limit;
+  if (nextOffset >= text.length) {
+    return fragment;
+  }
+  return `${fragment}\n[more: --continue ${logIndex}:${nextOffset}]`;
+}
+
+function appendOutput(lines, value, state) {
+  const text = String(value || '');
+  if (state.truncated) return;
+  if (state.totalChars + text.length > DEFAULT_TOTAL_CHAR_LIMIT) {
+    lines.push('[truncated: narrow --query/--time, use --select-fields, or paginate]');
+    state.truncated = true;
+    return;
+  }
+  lines.push(text);
+  state.totalChars += text.length;
+}
+
+function fieldNames(logs) {
+  const fields = new Set();
+  for (const log of logs) {
+    if (!log || typeof log !== 'object') continue;
+    for (const key of Object.keys(log)) fields.add(key);
+  }
+  return Array.from(fields).sort();
+}
+
+function formatFieldsOutput(output) {
+  const logs = extractLogs(output);
+  const fields = fieldNames(logs);
+  return JSON.stringify({ sampled_logs: logs.length, count: fields.length, fields }, null, 2);
+}
+
+function formatSelectedFieldValue(value) {
+  const text = compactDisplayText(value);
+  if (text.length <= SELECT_FIELD_CHAR_LIMIT) return text;
+  return `${text.slice(0, SELECT_FIELD_CHAR_LIMIT)}\n[field truncated: narrow --select-fields, use default body with --continue]`;
+}
+
+function formatSelectedLog(log, fields) {
+  return fields
+    .filter((field) => !HEADER_FIELD_SET.has(field))
+    .map((field) => `${field}: ${formatSelectedFieldValue(fieldValue(log, field))}`)
+    .join('\n');
+}
+
+function formatContinuation(logs, args) {
+  const parsed = parseContinueAt(args.continueAt);
+  const log = logs[parsed.index - 1];
+  if (!log) return `no log at index ${parsed.index}`;
+
+  const body = displayBody(log);
+  const rawText = body.value;
+  if (!rawText) return `log ${parsed.index} has no message/content`;
+  if (parsed.offset >= rawText.length) return `log ${parsed.index} has no ${body.label} after offset ${parsed.offset}`;
+
+  return renderContent(rawText, args, parsed.index, parsed.offset, CONTINUE_LOG_CHAR_LIMIT);
+}
+
+function formatLogTime(log) {
+  const raw = fieldValue(log, '__time__') || fieldValue(log, 'time') || fieldValue(log, '@timestamp');
+  if (!raw) return '-';
+  let millis;
+  if (/^\d+$/.test(raw)) {
+    millis = Number(raw) * (raw.length >= 13 ? 1 : 1000);
+  } else {
+    millis = Date.parse(raw);
+  }
+  if (!Number.isFinite(millis) || Number.isNaN(millis)) return raw;
+  const date = new Date(millis);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function logstoreName(item) {
+  if (typeof item === 'string') return item;
+  if (!item || typeof item !== 'object') return '';
+  return item.LogStoreName || item.logstoreName || item.logstore || item.name || '';
+}
+
+function extractLogstoreItems(payload) {
+  if (!payload || typeof payload !== 'object') return [];
+  if (Array.isArray(payload.LogStores)) return payload.LogStores;
+  if (Array.isArray(payload.logstores)) return payload.logstores;
+  if (payload.Data && Array.isArray(payload.Data.LogStores)) return payload.Data.LogStores;
+  if (payload.data && Array.isArray(payload.data.logStores)) return payload.data.logStores;
+  if (payload.data && Array.isArray(payload.data.logstores)) return payload.data.logstores;
+  if (Array.isArray(payload.data)) return payload.data;
+  return [];
+}
+
+function logstoreTotal(payload, names) {
+  for (const key of ['Count', 'Total', 'total', 'count']) {
+    if (payload && Number.isFinite(Number(payload[key]))) return Number(payload[key]);
+  }
+  if (payload && payload.data && Number.isFinite(Number(payload.data.total))) return Number(payload.data.total);
+  if (payload && payload.Data && Number.isFinite(Number(payload.Data.Total))) return Number(payload.Data.Total);
+  return names.length;
+}
+
+function formatLogstoresOutput(payload, args) {
+  const names = extractLogstoreItems(payload).map(logstoreName).filter(Boolean);
+  const total = logstoreTotal(payload, names);
+  const nextPage = args.page * args.pageSize < total ? args.page + 1 : null;
+  return JSON.stringify({
+    total,
+    page: args.page,
+    page_size: args.pageSize,
+    next_page: nextPage,
+    logstores: names,
+  }, null, 2);
+}
+
+function isSuccessfulQueryOutput(output) {
+  return Boolean(output && output.response && output.response.ok && output.result && output.result.ok !== false);
+}
+
+function appendPageHint(lines, logs, args, state) {
+  if (logs.length !== args.size) return;
+  appendOutput(lines, `[page=${args.page} size=${args.size} returned=${logs.length}]`, state);
+}
+
+function formatQueryOutput(output, args) {
+  const logs = extractLogs(output);
+  const status = output && output.response ? output.response.status : '';
+  if (!isSuccessfulQueryOutput(output)) {
+    const raw = output && output.result ? output.result.raw : null;
+    const code = raw && raw.code ? ` code=${raw.code}` : '';
+    const message = raw && raw.message ? ` message=${formatErrorMessage(raw.message)}` : '';
+    return redactText(`query failed: status=${status}${code}${message}`);
+  }
+  if (!logs.length) return 'no logs';
+  if (args.continueAt) return redactText(formatContinuation(logs, args));
+
+  const lines = [];
+  const state = { totalChars: 0, truncated: false };
+  const selectFields = args.selectFields;
+
+  for (let i = 0; i < logs.length; i += 1) {
+    const log = logs[i];
+    const logIndex = i + 1;
+
+    if (selectFields.length) {
+      appendOutput(lines, `[${logIndex}] time=${formatLogTime(log)} container=${containerName(log)}`, state);
+      const selectedText = formatSelectedLog(log, selectFields);
+      if (selectedText) appendOutput(lines, selectedText, state);
+      appendOutput(lines, '', state);
+      continue;
+    }
+
+    const body = displayBody(log);
+    const extra = args.extraFields
+      .map((field) => `${field}=${compactDisplayText(fieldValue(log, field))}`)
+      .join(' ');
+    const headerFields = [`[${logIndex}]`];
+    if (body.label !== 'content') headerFields.push(`time=${formatLogTime(log)}`);
+    headerFields.push(`container=${containerName(log)}`);
+    const headerBase = headerFields.join(' ');
+    const header = extra ? `${headerBase} ${extra}` : headerBase;
+    appendOutput(lines, header, state);
+    appendOutput(lines, `${body.label}=${renderContent(body.value, args, logIndex, 0)}`, state);
+    appendOutput(lines, '', state);
+  }
+
+  appendPageHint(lines, logs, args, state);
+  return redactText(lines.join('\n').replace(/\n+$/, ''));
+}
+
+function captureSlsAuth(page, context, args, dependencies = {}) {
+  const writeAuth = dependencies.writeAuth || writeAuthFile;
+  const abortSignal = dependencies.abortSignal;
+  let settled = false;
+  let timeoutId;
+  const cleanupFns = [];
+  let settleResolve;
+  let settleReject;
+  const settledPromise = new Promise((resolve, reject) => {
+    settleResolve = resolve;
+    settleReject = reject;
+  });
+
+  function cleanup() {
+    if (timeoutId) clearTimeout(timeoutId);
+    timeoutId = null;
+    while (cleanupFns.length) {
+      const cleanupFn = cleanupFns.pop();
+      cleanupFn();
+    }
+  }
+
+  function settleSuccess(value) {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    settleResolve(value);
+  }
+
+  function settleError(error) {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    settleReject(error);
+  }
+
+  async function onResponse(response) {
+    if (settled) return;
+    const url = response.url();
+    // 用 SLS getLogs response 确认登录态有效，再从对应 request 取 x-csrf-token。
+    if ((!url.includes(SLS_GET_LOGS_INDEX_PATH) && !url.includes(SLS_GET_LOGS_FULL_PATH)) || !response.ok()) return;
+    const payload = await response.json().catch(() => null);
+    if (!payload || payload.success === false) return;
+    const csrfToken = response.request().headers()['x-csrf-token'];
+    if (!csrfToken) return;
+
+    debugAuth(args, `csrf captured (${url.includes(SLS_GET_LOGS_INDEX_PATH) ? 'logstoreindex' : 'logs'})`);
+    try {
+      settleSuccess(await writeAuth(args, page, context, csrfToken));
+    } catch (error) {
+      settleError(error);
+    }
+  }
+
+  // 总超时只做兜底：用户一直没有完成登录或页面没有发出 SLS 查询请求时，命令要能失败返回。
+  timeoutId = setTimeout(() => {
+    settleError(new Error('failed to capture SLS auth response; click Search once in the Aliyun SLS page and retry'));
+  }, args.timeout * 1000);
+  page.on('response', onResponse);
+  cleanupFns.push(() => page.off('response', onResponse));
+  if (abortSignal) {
+    const onAbort = () => {
+      const reason = abortSignal.reason instanceof Error
+        ? abortSignal.reason
+        : new Error('登录已取消或浏览器已关闭，auth 已停止。');
+      settleError(reason);
+    };
+    if (abortSignal.aborted) {
+      onAbort();
+    } else {
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      cleanupFns.push(() => abortSignal.removeEventListener('abort', onAbort));
+    }
+  }
+  debugAuth(args, 'waiting for SLS response; click Search if needed');
+  return settledPromise;
+}
+
+function installBrowserAuthCloseHandlers(context, settleError) {
+  let pageCount = 0;
+
+  function cancelAuth() {
+    settleError(new Error('登录已取消或浏览器已关闭，auth 已停止。'));
+  }
+
+  function markPage(candidatePage) {
+    if (!candidatePage || typeof candidatePage.once !== 'function') return;
+    if (typeof candidatePage.isClosed === 'function' && candidatePage.isClosed()) return;
+    pageCount += 1;
+    candidatePage.once('close', () => {
+      pageCount = Math.max(0, pageCount - 1);
+      if (pageCount === 0) cancelAuth();
+    });
+  }
+
+  if (context && typeof context.once === 'function') context.once('close', cancelAuth);
+  if (context && typeof context.browser === 'function') {
+    const browser = context.browser();
+    if (browser && typeof browser.once === 'function') browser.once('disconnected', cancelAuth);
+  }
+  if (context && typeof context.pages === 'function') {
+    for (const candidatePage of context.pages()) markPage(candidatePage);
+    if (typeof context.on === 'function') context.on('page', markPage);
+  }
+  return {
+    markPage,
+    getPageCount: () => pageCount,
+  };
+}
+
+function formatAuthSuccessOutput() {
+  return 'auth ready';
+}
+
+function reportAutoFillFailure(args, error) {
+  debugAuth(args, `auto-fill failed: ${error && error.message ? error.message : String(error)}`);
+}
+
+async function run(args) {
+  if (args.command === 'query') {
+    const output = await queryLogsWithAuthFile(args);
+    console.log(formatQueryOutput(output, args));
+    if (!isSuccessfulQueryOutput(output)) process.exitCode = 1;
+    return;
+  }
+  if (args.command === 'fields') {
+    const output = await queryLogsWithAuthFile(args);
+    if (!isSuccessfulQueryOutput(output)) {
+      console.log(formatQueryOutput(output, args));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(formatFieldsOutput(output));
+    return;
+  }
+  if (args.command === 'logstores') {
+    const output = await listLogstoresWithAuthFile(args);
+    console.log(formatLogstoresOutput(output, args));
+    return;
+  }
+
+  const browser = await newBrowserContext(args);
+  const { context } = browser;
+  try {
+    const authAbortController = new AbortController();
+    const browserLifecycle = installBrowserAuthCloseHandlers(context, (error) => {
+      if (!authAbortController.signal.aborted) authAbortController.abort(error);
+    });
+    const page = context.pages()[0] || await context.newPage();
+    if (browserLifecycle.getPageCount() === 0) browserLifecycle.markPage(page);
+    const authCaptured = captureSlsAuth(page, context, args, {
+      abortSignal: authAbortController.signal,
+    });
+    await openLoginPage(page, context, args);
+    const autoFillTask = args.noAutoFill ? Promise.resolve() : autoLoginAliyun(page, args);
+    autoFillTask.catch((error) => reportAutoFillFailure(args, error));
+    await authCaptured;
+    await writeStdoutLine(formatAuthSuccessOutput());
+    if (!args.profileDir) {
+      closeAndCleanupBrowserDetached(browser);
+      process.exit(0);
+    }
+  } finally {
+    await closeAndCleanupBrowser(browser).catch(() => {});
+  }
+}
+
+module.exports = {
+  parseArgs,
+  parseTime,
+  parseTimeExpression,
+  buildQueryBody,
+  buildLogstoresRequest,
+  normalizeResult,
+  extractPayloadLogs,
+  extractLogs,
+  formatQueryOutput,
+  isSuccessfulQueryOutput,
+  formatFieldsOutput,
+  formatLogstoresOutput,
+  formatSelectedLog,
+  foldMybatisSqlText,
+  renderContent,
+  openLoginPage,
+  autoLoginAliyun,
+  hasAliyunCaptcha,
+  detectAliyunCaptchaInDocument,
+  loginAutoFillGuidanceMessage,
+  shouldInjectLoginGuidanceNotice,
+  fetchWithTimeout,
+  captureSlsAuth,
+  installBrowserAuthCloseHandlers,
+  formatAuthSuccessOutput,
+  reportAutoFillFailure,
+  applyUserConfig,
+  readUsernameFromKeychainAccount,
+  readPasswordFromKeychain,
+  readTotpSeedFromKeychain,
+};
+
+if (require.main === module) {
+  (async () => {
+    const args = parseArgs(process.argv.slice(2));
+    await applyUserConfig(args);
+    await run(args);
+  })().catch((error) => {
+    console.error(`ERROR: ${error && error.message ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}

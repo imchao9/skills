@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codemao 排障"
+  short_description: "Investigate Codemao runtime problems by first identifying the environment, scope, and evidence needed."
+  default_prompt: "用 $codemao-troubleshoot 先确认环境、范围和证据缺口，再按安全和成本原则排查点猫运行时问题。"

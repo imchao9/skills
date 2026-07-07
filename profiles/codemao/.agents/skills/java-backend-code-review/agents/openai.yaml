@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java 后端代码审查"
+  short_description: "审查后端 MR、分支差异或本地 diff，并检查空值高危模式和历史问题"
+  default_prompt: "审查这个 Java/Kotlin 后端 MR、分支差异或本地 diff。如果输入不完整，询问 MR URL/IID，或询问源分支和目标分支。如果用户要按 MR 模式审查但缺少 glab，引导用户安装 glab 或切换到分支对比模式，并且只有在用户明确确认后才安装。检查相关仓库代码和空值高危模式，输出高置信 findings；正式 review 后必须生成独立审查产物，归档到 cr-notes 并 push。需要时记录或查询审查历史。"

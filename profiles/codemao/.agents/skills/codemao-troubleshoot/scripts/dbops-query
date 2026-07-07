@@ -1,0 +1,1464 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const { spawn } = require('node:child_process');
+const { redactText, redactValue, isSecretKey, isAlreadyRedacted, REDACTED } = require('./skillctl');
+
+const SKILL_ROOT = path.resolve(__dirname, '..');
+const OUTPUT_DIR = path.join(SKILL_ROOT, 'output');
+const DEFAULT_CONFIG_FILE = path.join(__dirname, 'dbops-query.config.json');
+const DEFAULT_COOKIE_FILE = path.join(OUTPUT_DIR, 'dbops-auth-cookie.txt');
+const DEFAULT_STORAGE_STATE = path.join(OUTPUT_DIR, 'dbops-auth-storage-state.json');
+const DBOPS_BASE_URL = 'https://dbops.codemao.cn';
+const DBOPS_SQLQUERY_REFERER = 'https://dbops.codemao.cn/sqlquery/';
+const DBOPS_LOGIN_PAGE_URL = DBOPS_SQLQUERY_REFERER;
+const DBOPS_AUTH_CHECK_URL = 'https://dbops.codemao.cn/group/user_all_instances/?tag_codes%5B%5D=can_read';
+const DEFAULT_LOGIN_TIMEOUT_SECONDS = 180;
+const PLAYWRIGHT_OPEN_TIMEOUT_MS = 30000;
+const LOGIN_HOST_KEYWORD = 'internal-account.codemao.cn';
+const LOGIN_PATH_KEYWORD = '/login';
+const REQUIRED_COOKIE_NAMES = new Set(['csrftoken']);
+const AUTH_COOKIE_NAME_CANDIDATES = ['sessionid', 'internal_account_token', 'admin-authorization', 'authorization'];
+const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const PERMISSION_KEYWORDS = [
+  'permission',
+  'forbidden',
+  'denied',
+  'unauthorized',
+  '没有权限',
+  '无权限',
+  '权限不足',
+];
+const SQL_ALLOWED_PREFIXES = ['select ', 'show ', 'desc ', 'describe ', 'explain '];
+const SQL_BLOCKED_PREFIXES = [
+  'insert ',
+  'update ',
+  'delete ',
+  'drop ',
+  'alter ',
+  'create ',
+  'truncate ',
+  'replace ',
+  'merge ',
+  'call ',
+  'grant ',
+  'revoke ',
+];
+
+const KNOWN_COMMANDS = new Set([
+  'auth',
+  'query-on',
+  'instances',
+  'resources',
+  'querylog',
+  'queryloginfo',
+  'favorites',
+  'favorite-list',
+  'favorite-find',
+  'favorite',
+  'unfavorite',
+  'favorite-info',
+  'favorite-run',
+  'favorite-query',
+  'api',
+]);
+
+const USAGE = `Usage:
+  dbops-query <command> [args]
+  dbops-query "SELECT ..."        # uses configured default target
+  echo "SELECT ..." | dbops-query # uses configured default target
+
+Commands:
+  auth             capture dbops login cookie
+  query-on         run readonly SQL on explicit instance/database
+  instances        list readable instances
+  resources        list databases, tables, or schemas
+  querylog         list recent query logs
+  queryloginfo     show one query log detail
+  favorites        list favorite queries
+  favorite-list    alias of favorites
+  favorite-find    search favorite queries
+  favorite-info    show favorite detail
+  favorite-run     run a favorite query
+  favorite-query   run a modified favorite query
+  favorite         save a query log as favorite
+  unfavorite       remove a favorite
+  api              call dbops platform API fallback
+
+Use:
+  dbops-query <command> --help
+`;
+
+const COMMAND_HELP = {
+  auth: `Usage:
+  dbops-query auth [--login-timeout SECONDS]
+
+Capture dbops login cookie with browser login.
+Writes output/dbops-auth-cookie.txt and output/dbops-auth-storage-state.json.
+Does not print cookie values.
+
+Options:
+  --login-timeout SECONDS  login wait timeout; default 180
+`,
+  'query-on': `Usage:
+  dbops-query query-on "实例名" "库名" "SELECT COUNT(*) FROM tbl_xxx"
+
+Run readonly SQL on an explicit instance and database.
+Only SELECT, SHOW, DESC, DESCRIBE, and EXPLAIN are allowed.
+`,
+  instances: `Usage:
+  dbops-query instances [tag_code]
+
+List instances visible to the current dbops account.
+Default tag_code is can_read.
+
+Examples:
+  dbops-query instances
+  dbops-query instances can_read
+`,
+  resources: `Usage:
+  dbops-query resources "实例名" database
+  dbops-query resources "实例名" table db_name=库名
+  dbops-query resources "实例名" schema db_name=库名
+
+List databases, tables, or schemas for one instance.
+`,
+  querylog: `Usage:
+  dbops-query querylog [limit=N] [offset=N]
+
+List recent query logs visible to the current account.
+
+Example:
+  dbops-query querylog limit=5 offset=0
+`,
+  queryloginfo: `Usage:
+  dbops-query queryloginfo <log_id>
+
+Show one query log detail.
+
+Example:
+  dbops-query queryloginfo 1053686
+`,
+  favorites: `Usage:
+  dbops-query favorites
+  dbops-query favorite-list
+
+List saved favorite queries.
+`,
+  'favorite-list': `Usage:
+  dbops-query favorite-list
+
+Alias of dbops-query favorites.
+`,
+  'favorite-find': `Usage:
+  dbops-query favorite-find <keyword>
+
+Search saved favorite queries by keyword.
+
+Example:
+  dbops-query favorite-find 录播课营销
+`,
+  'favorite-info': `Usage:
+  dbops-query favorite-info <alias>
+
+Show favorite query detail without running SQL.
+`,
+  'favorite-run': `Usage:
+  dbops-query favorite-run <alias>
+
+Run the SQL stored in one favorite.
+Confirm the target instance and database before using it as evidence.
+`,
+  'favorite-query': `Usage:
+  dbops-query favorite-query <alias> "SELECT COUNT(*) FROM tbl_xxx"
+
+Run modified readonly SQL using the target from one favorite.
+Only readonly SQL is allowed.
+`,
+  favorite: `Usage:
+  dbops-query favorite <query_log_id> <alias>
+
+Save a query log as favorite.
+This changes favorite state; use only as排查准备或知识沉淀 and get user authorization when needed.
+`,
+  unfavorite: `Usage:
+  dbops-query unfavorite <query_log_id>
+
+Remove a favorite.
+This changes favorite state; use only as排查准备或知识沉淀 and get user authorization when needed.
+`,
+  api: `Usage:
+  dbops-query api GET /path [key=value ...]
+  dbops-query api POST /path [key=value ...]
+
+Call a dbops platform API as fallback when the wrapped commands are insufficient.
+Do not use api as the default troubleshooting entry.
+POST may change state and requires user authorization.
+`,
+};
+
+class CliError extends Error {
+  constructor(code, message, options = {}) {
+    super(message);
+    this.code = code;
+    this.message = message;
+    this.retryable = Boolean(options.retryable);
+    this.status = options.status;
+    this.exitCode = options.exitCode || 1;
+  }
+
+  toString() {
+    const retryHint = this.retryable ? 'retryable' : 'non-retryable';
+    if (this.status !== undefined && this.status !== null) {
+      return `[${this.code}] status=${this.status} ${retryHint}: ${this.message}`;
+    }
+    return `[${this.code}] ${retryHint}: ${this.message}`;
+  }
+}
+
+function printUsage(stream = process.stderr) {
+  stream.write(USAGE.endsWith('\n') ? USAGE : `${USAGE}\n`);
+}
+
+function printCommandHelp(command, stream = process.stdout) {
+  const text = COMMAND_HELP[command];
+  if (!text) throw new CliError('invalid_argument', `unknown command: ${command}`, { exitCode: 2 });
+  stream.write(text.endsWith('\n') ? text : `${text}\n`);
+}
+
+function checkReadonlySql(sql) {
+  if (!sql) return;
+  let normalized = sql.trim().toLowerCase();
+  if (normalized.endsWith(';')) normalized = normalized.slice(0, -1).trim();
+  if (!SQL_ALLOWED_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
+    throw new CliError('readonly_only', 'Only read-only SQL is allowed', { exitCode: 2 });
+  }
+}
+
+function isReadonlySqlStart(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return SQL_ALLOWED_PREFIXES.some((prefix) => normalized === prefix.trim() || normalized.startsWith(prefix));
+}
+
+function isBlockedSqlStart(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return SQL_BLOCKED_PREFIXES.some((prefix) => normalized === prefix.trim() || normalized.startsWith(prefix));
+}
+
+function sqlFromArgs(argv) {
+  if (!argv.length) return '';
+  const command = argv[0];
+  if (command === 'query-on') return argv.slice(3).join(' ');
+  if (command === 'favorite-query') return argv.slice(2).join(' ');
+  if (command === 'favorite-run') return '';
+  if (command === 'auth') return '';
+  if (command.startsWith('-')) return '';
+  if (KNOWN_COMMANDS.has(command)) return '';
+  return argv.join(' ');
+}
+
+function assertNoOptionArguments(items) {
+  for (const item of items) {
+    if (String(item || '').startsWith('-')) {
+      throw new CliError('invalid_argument', `unknown argument: ${item}`, { exitCode: 2 });
+    }
+  }
+}
+
+function assertKeyValueArguments(items) {
+  assertNoOptionArguments(items);
+  parseKeyValues(items);
+}
+
+function assertArgCount(command, argv, min, max = min) {
+  if (argv.length < min || argv.length > max) {
+    throw new CliError('invalid_argument', `Usage: ${COMMAND_HELP[command].split('\n')[1].trim()}`, { exitCode: 2 });
+  }
+}
+
+function validateKnownCommandArgs(argv) {
+  const command = argv[0];
+  if (command === 'auth') return;
+  if (command === 'query-on') {
+    if (argv.length < 4) throw new CliError('invalid_argument', 'Usage: dbops-query query-on <instance_name> <db_name> <sql>', { exitCode: 2 });
+    return;
+  }
+  if (command === 'favorite-query') {
+    if (argv.length < 3) throw new CliError('invalid_argument', 'Usage: dbops-query favorite-query <alias> <sql>', { exitCode: 2 });
+    return;
+  }
+  if (command === 'instances') {
+    assertArgCount(command, argv, 1, 2);
+    assertNoOptionArguments(argv.slice(1));
+    return;
+  }
+  if (command === 'resources') {
+    if (argv.length < 3) throw new CliError('invalid_argument', 'Usage: dbops-query resources <instance_name> <database|table|schema> [db_name=...] [schema_name=...]', { exitCode: 2 });
+    assertKeyValueArguments(argv.slice(3));
+    return;
+  }
+  if (command === 'querylog') {
+    assertKeyValueArguments(argv.slice(1));
+    return;
+  }
+  if (command === 'queryloginfo') { assertArgCount(command, argv, 2); return; }
+  if (command === 'favorites' || command === 'favorite-list') { assertArgCount(command, argv, 1); return; }
+  if (['favorite-find', 'favorite-info', 'favorite-run', 'unfavorite'].includes(command)) {
+    assertArgCount(command, argv, 2);
+    return;
+  }
+  if (command === 'favorite') { assertArgCount(command, argv, 3); return; }
+  if (command === 'api') {
+    if (argv.length < 3) throw new CliError('invalid_argument', 'Usage: dbops-query api <GET|POST> <path> [key=value ...]', { exitCode: 2 });
+    if (!['GET', 'POST'].includes(String(argv[1]).toUpperCase())) {
+      throw new CliError('invalid_argument', `Unsupported method: ${argv[1]}`, { exitCode: 2 });
+    }
+    assertKeyValueArguments(argv.slice(3));
+  }
+}
+
+function validateArgs(argv) {
+  if (!argv.length) return process.stdin.isTTY ? { usage: true } : { query: true };
+  if (argv[0] === '-h' || argv[0] === '--help') return { help: true };
+  if (argv.includes('-h') || argv.includes('--help')) {
+    if (KNOWN_COMMANDS.has(argv[0])) return { helpCommand: argv[0] };
+    throw new CliError('invalid_argument', `unknown command: ${argv[0]}`, { exitCode: 2 });
+  }
+  if (String(argv[0] || '').startsWith('-')) {
+    throw new CliError('invalid_argument', `unknown argument: ${argv[0]}`, { exitCode: 2 });
+  }
+  if (KNOWN_COMMANDS.has(argv[0])) {
+    validateKnownCommandArgs(argv);
+    checkReadonlySql(sqlFromArgs(argv));
+    return { usage: false };
+  }
+  if (!isReadonlySqlStart(argv[0]) && !isBlockedSqlStart(argv[0])) {
+    throw new CliError('invalid_argument', `unknown command: ${argv[0]}`, { exitCode: 2 });
+  }
+  checkReadonlySql(sqlFromArgs(argv));
+  return { usage: false };
+}
+
+function parseConfigFile(configFile) {
+  if (!fs.existsSync(configFile)) {
+    return {};
+  }
+  try {
+    return JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  } catch (error) {
+    throw new CliError('config_invalid_json', `${configFile}: ${error.message}`);
+  }
+}
+
+function readCookieFromFile(cookieFile) {
+  if (!cookieFile || !fs.existsSync(cookieFile)) return '';
+  const lines = fs.readFileSync(cookieFile, 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+  return lines[lines.length - 1] || '';
+}
+
+function extractCookieValue(cookie, key) {
+  const prefix = `${key}=`;
+  for (const part of String(cookie || '').split(';')) {
+    const item = part.trim();
+    if (item.startsWith(prefix)) return item.slice(prefix.length);
+  }
+  return '';
+}
+
+function envOrConfig(envName, configValue, fallback = '') {
+  const envValue = process.env[envName];
+  if (typeof envValue === 'string' && envValue.trim()) return envValue.trim();
+  if (typeof configValue === 'string' && configValue.trim()) return configValue.trim();
+  if (typeof configValue === 'number') return String(configValue);
+  return fallback;
+}
+
+function dbopsBaseUrl() {
+  if (process.env.NODE_ENV === 'test' && process.env.CODEMAO_DBOPS_QUERY_TEST_BASE_URL) {
+    return process.env.CODEMAO_DBOPS_QUERY_TEST_BASE_URL.replace(/\/+$/, '');
+  }
+  return DBOPS_BASE_URL;
+}
+
+function dbopsSqlqueryReferer() {
+  return `${dbopsBaseUrl()}/sqlquery/`;
+}
+
+function dbopsLoginPageUrl() {
+  if (process.env.NODE_ENV === 'test' && process.env.CODEMAO_DBOPS_QUERY_TEST_BASE_URL) {
+    return dbopsSqlqueryReferer();
+  }
+  return DBOPS_LOGIN_PAGE_URL;
+}
+
+function dbopsAuthCheckUrl() {
+  if (process.env.NODE_ENV === 'test' && process.env.CODEMAO_DBOPS_QUERY_TEST_BASE_URL) {
+    return `${dbopsBaseUrl()}/group/user_all_instances/?tag_codes%5B%5D=can_read`;
+  }
+  return DBOPS_AUTH_CHECK_URL;
+}
+
+function getRuntimeConfig(options = {}) {
+  const configFile = process.env.DBOPS_CONFIG_FILE || DEFAULT_CONFIG_FILE;
+  const fileConfig = parseConfigFile(configFile);
+  const defaults = fileConfig.defaults && typeof fileConfig.defaults === 'object' ? fileConfig.defaults : {};
+  const baseUrl = dbopsBaseUrl();
+  const referer = dbopsSqlqueryReferer();
+  const cookieFile = process.env.DBOPS_COOKIE_FILE || DEFAULT_COOKIE_FILE;
+  const cookie = envOrConfig('DBOPS_COOKIE', '', readCookieFromFile(cookieFile));
+  const csrftoken = extractCookieValue(cookie, 'csrftoken') || envOrConfig('DBOPS_CSRFTOKEN', '', '');
+  const instanceName = envOrConfig('DBOPS_INSTANCE_NAME', defaults.instanceName, '');
+  const dbName = envOrConfig('DBOPS_DB_NAME', defaults.dbName, '');
+  const schemaName = envOrConfig('DBOPS_SCHEMA_NAME', defaults.schemaName, '');
+  const tbName = envOrConfig('DBOPS_TB_NAME', defaults.tableName, '');
+  const limitNum = envOrConfig('DBOPS_LIMIT_NUM', defaults.limitNum, '100');
+
+  if (!cookie) throw new CliError('cookie_missing', `Missing dbops cookie: DBOPS_COOKIE or ${cookieFile}`);
+  if (!csrftoken) {
+    throw new CliError('csrftoken_missing', 'Missing dbops csrftoken: add csrftoken to DBOPS_COOKIE or set DBOPS_CSRFTOKEN');
+  }
+  if (options.requireQueryTarget) {
+    const missing = [];
+    if (!instanceName) missing.push('defaults.instanceName');
+    if (!dbName) missing.push('defaults.dbName');
+    if (missing.length) {
+      throw new CliError(
+        'query_target_missing',
+        `Default dbops query target is not configured: ${missing.join(', ')}. Use query-on <instance_name> <db_name> <sql>.`,
+      );
+    }
+  }
+
+  return {
+    base_url: baseUrl,
+    referer,
+    cookie,
+    csrftoken,
+    instance_name: instanceName,
+    db_name: dbName,
+    schema_name: schemaName,
+    tb_name: tbName,
+    limit_num: limitNum,
+  };
+}
+
+function parseKeyValues(items) {
+  const params = {};
+  for (const item of items) {
+    const separator = String(item).indexOf('=');
+    if (separator === -1) throw new CliError('invalid_argument', `Invalid argument: ${item}. Expected key=value.`, { exitCode: 2 });
+    const key = item.slice(0, separator).trim();
+    if (!key) throw new CliError('invalid_argument', `Invalid argument: ${item}. Empty key.`, { exitCode: 2 });
+    params[key] = item.slice(separator + 1);
+  }
+  return params;
+}
+
+function buildHeaders(config, isForm = false) {
+  const headers = {
+    'X-CSRFToken': config.csrftoken,
+    'X-Requested-With': 'XMLHttpRequest',
+    Referer: config.referer,
+    Origin: config.base_url,
+    Cookie: config.cookie,
+    'User-Agent': 'codex-dbops-readonly/1.0',
+    Accept: '*/*',
+  };
+  if (isForm) headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+  return headers;
+}
+
+function buildApiRequest(config, method, requestPath, params = {}) {
+  const normalizedPath = requestPath.startsWith('/') ? requestPath : `/${requestPath}`;
+  const url = new URL(`${config.base_url}${normalizedPath}`);
+  const upperMethod = method.toUpperCase();
+  let body;
+  let headers;
+  if (upperMethod === 'GET') {
+    for (const [key, value] of Object.entries(params)) url.searchParams.append(key, value);
+    headers = buildHeaders(config);
+  } else if (upperMethod === 'POST') {
+    body = new URLSearchParams(params).toString();
+    headers = buildHeaders(config, true);
+  } else {
+    throw new CliError('invalid_argument', `Unsupported method: ${method}`, { exitCode: 2 });
+  }
+  return { url: url.toString(), method: upperMethod, headers, body };
+}
+
+function buildQueryRequest(config, sql) {
+  return buildApiRequest(config, 'POST', '/query/', {
+    instance_name: config.instance_name,
+    db_name: config.db_name,
+    schema_name: config.schema_name,
+    tb_name: config.tb_name,
+    sql_content: sql,
+    limit_num: String(config.limit_num),
+  });
+}
+
+function looksLikeLoginResponse(url, bodyText) {
+  const loweredUrl = String(url || '').toLowerCase();
+  const loweredBody = String(bodyText || '').toLowerCase();
+  if (loweredUrl.includes(LOGIN_HOST_KEYWORD) && loweredUrl.includes(LOGIN_PATH_KEYWORD)) return true;
+  if (String(bodyText || '').includes('统一登录') && loweredBody.includes('<form')) return true;
+  if (loweredUrl.includes('login?referrerurl=')) return true;
+  return false;
+}
+
+function classifyMessageCode(message, status, url = '') {
+  const lowered = String(message || '').toLowerCase();
+  const loweredUrl = String(url || '').toLowerCase();
+  if (loweredUrl.includes(LOGIN_HOST_KEYWORD) && loweredUrl.includes(LOGIN_PATH_KEYWORD)) return 'auth_expired';
+  if (String(message || '').includes('统一登录') || loweredUrl.includes('login?referrerurl=')) return 'auth_expired';
+  if (lowered.includes('csrf')) return 'csrf_failed';
+  if (String(message || '').includes('不支持的查询语法类型') || String(message || '').includes('禁止执行该命令')) return 'dbops_unsupported_sql';
+  if (lowered.includes('sql语句中含有')) return 'dbops_sql_rejected';
+  if ([401, 403].includes(status) || PERMISSION_KEYWORDS.some((keyword) => lowered.includes(keyword))) return 'permission_denied';
+  if ([400, 404, 405, 409, 422].includes(status)) return 'request_error';
+  return 'service_error';
+}
+
+function extractPayloadError(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
+  const data = payload.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    for (const key of ['error', 'msg']) {
+      if (data[key]) return String(data[key]);
+    }
+  }
+  for (const key of ['msg', 'error']) {
+    if (payload[key]) return String(payload[key]);
+  }
+  return '';
+}
+
+function shouldRetryHttpError(status, bodyText) {
+  if (!RETRYABLE_HTTP_STATUSES.has(status)) return false;
+  const lowered = String(bodyText || '').toLowerCase();
+  if (lowered.includes('csrf') || PERMISSION_KEYWORDS.some((keyword) => lowered.includes(keyword))) return false;
+  return true;
+}
+
+function summarizeHttpMessage(bodyText, contentType) {
+  const message = String(bodyText || '').split(/\s+/).filter(Boolean).join(' ').slice(0, 240);
+  return message || `HTTP response ${contentType || ''}`.trim();
+}
+
+function buildHttpError(status, bodyText, contentType, url = '') {
+  if (looksLikeLoginResponse(url, bodyText)) {
+    return new CliError(
+      'auth_expired',
+      `DBOPS login state expired or invalid; refresh dbops auth cookie (status=${status}, url=${url})`,
+      { status },
+    );
+  }
+  const message = summarizeHttpMessage(bodyText, contentType);
+  return new CliError(
+    classifyMessageCode(bodyText || message, status, url),
+    message,
+    { retryable: shouldRetryHttpError(status, bodyText), status },
+  );
+}
+
+function classifyNetworkError(error) {
+  const message = error && error.message ? error.message : String(error);
+  const lowered = message.toLowerCase();
+  if (lowered.includes('timed out') || error.name === 'AbortError') return new CliError('network_timeout', message, { retryable: true });
+  if (lowered.includes('temporary failure')) return new CliError('network_temporary_failure', message, { retryable: true });
+  if (lowered.includes('nodename nor servname provided') || lowered.includes('name or service not known')) return new CliError('network_dns_error', message);
+  if (lowered.includes('certificate') || lowered.includes('ssl')) return new CliError('network_tls_error', message);
+  return new CliError('network_error', message);
+}
+
+function getMaxAttempts() {
+  const value = Number(process.env.DBOPS_HTTP_MAX_ATTEMPTS || 3);
+  return Number.isInteger(value) && value > 0 ? value : 3;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function performRequest(builder, expectJson) {
+  const attempts = getMaxAttempts();
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const request = builder();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+        signal: controller.signal,
+        redirect: 'follow',
+      });
+      const bodyText = await response.text();
+      if (!response.ok) {
+        if (expectJson) {
+          try {
+            const payload = JSON.parse(bodyText);
+            const message = extractPayloadError(payload) || `HTTP ${response.status}`;
+            throw new CliError(classifyMessageCode(message, response.status, response.url), message, { status: response.status });
+          } catch (error) {
+            if (error instanceof CliError) throw error;
+          }
+        }
+        const httpError = buildHttpError(response.status, bodyText, response.headers.get('content-type') || '', response.url);
+        lastError = httpError;
+        if (httpError.retryable && attempt < attempts) {
+          await sleep(Math.min(500 * attempt, 2000));
+          continue;
+        }
+        throw httpError;
+      }
+      if (expectJson) {
+        if (looksLikeLoginResponse(response.url, bodyText)) {
+          throw new CliError('auth_expired', `DBOPS login state expired or invalid; refresh dbops auth cookie (url=${response.url})`);
+        }
+        try {
+          return { status: response.status, payload: JSON.parse(bodyText) };
+        } catch {
+          const snippet = bodyText.split(/\s+/).filter(Boolean).join(' ').slice(0, 240);
+          throw new CliError('invalid_response', `Invalid dbops response: status=${response.status}, url=${response.url}, content_type=${response.headers.get('content-type') || ''}, body=${snippet}`);
+        }
+      }
+      return { status: response.status, contentType: response.headers.get('content-type') || '', bodyText };
+    } catch (error) {
+      if (error instanceof CliError) {
+        lastError = error;
+        if (error.retryable && attempt < attempts) {
+          await sleep(Math.min(500 * attempt, 2000));
+          continue;
+        }
+        throw error;
+      }
+      const networkError = classifyNetworkError(error);
+      lastError = networkError;
+      if (networkError.retryable && attempt < attempts) {
+        await sleep(Math.min(500 * attempt, 2000));
+        continue;
+      }
+      throw networkError;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+  throw lastError || new CliError('unknown_error', 'dbops request failed without details');
+}
+
+function ensureServicePayloadOk(payload, commandName) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+  if (!Object.prototype.hasOwnProperty.call(payload, 'status')) return;
+  const status = payload.status;
+  if (status === 0 || status === '0' || status === null || status === undefined) return;
+  const message = extractPayloadError(payload) || `${commandName} failed, status=${status}`;
+  throw new CliError(classifyMessageCode(message), message);
+}
+
+async function performJsonRequest(builder) {
+  return performRequest(builder, true);
+}
+
+async function performTextRequest(builder) {
+  return performRequest(builder, false);
+}
+
+async function fetchInstancesPayload(config) {
+  const result = await performJsonRequest(() => buildApiRequest(config, 'GET', '/group/user_all_instances/', { 'tag_codes[]': 'can_read' }));
+  ensureServicePayloadOk(result.payload, 'instances');
+  return result;
+}
+
+async function fetchResourcesPayload(config, instanceName, resourceType, extraParams = {}) {
+  const result = await performJsonRequest(() => buildApiRequest(config, 'GET', '/instance/instance_resource/', {
+    instance_name: instanceName,
+    resource_type: resourceType,
+    ...extraParams,
+  }));
+  ensureServicePayloadOk(result.payload, 'resources');
+  return result;
+}
+
+async function fetchQuerylogPayload(config, params) {
+  return performJsonRequest(() => buildApiRequest(config, 'GET', '/query/querylog/', params));
+}
+
+async function fetchQueryloginfoPayload(config, logId) {
+  return performJsonRequest(() => buildApiRequest(config, 'POST', '/query/queryloginfo/', { log_id: String(logId) }));
+}
+
+function parseFavoritesItems(html) {
+  const items = [];
+  const selectMatch = String(html || '').match(/<select\b[^>]*\bid=["']favorites["'][^>]*>([\s\S]*?)<\/select>/i);
+  if (!selectMatch) return items;
+  const optionRe = /<option\b[^>]*\bvalue=["']?([^"'>\s]*)["']?[^>]*>([\s\S]*?)<\/option>/gi;
+  let match;
+  while ((match = optionRe.exec(selectMatch[1]))) {
+    const id = decodeHtml(match[1].trim());
+    const alias = decodeHtml(match[2].replace(/<[^>]+>/g, '').trim());
+    if (id || alias) items.push({ id, alias });
+  }
+  return items;
+}
+
+function decodeHtml(value) {
+  return String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+async function fetchFavoritesItems(config) {
+  const result = await performTextRequest(() => buildApiRequest(config, 'GET', '/sqlquery/', {}));
+  return { status: result.status, contentType: result.contentType, items: parseFavoritesItems(result.bodyText) };
+}
+
+function findFavoriteItems(items, alias) {
+  const exact = items.filter((item) => item.alias === alias);
+  if (exact.length) return exact;
+  return items.filter((item) => item.alias.includes(alias));
+}
+
+function guessResourceFromSql(dbType, sql) {
+  const normalized = String(sql || '').trim();
+  if (dbType === 'mongo') {
+    const match = normalized.match(/\bdb\.([A-Za-z0-9_]+)\./);
+    return match ? { kind: 'collection', resource_type: 'table', name: match[1] } : null;
+  }
+  if (['mysql', 'pgsql', 'oracle', 'mssql', 'phoenix'].includes(dbType)) {
+    const patterns = [
+      /^\s*show\s+create\s+table\s+`?([A-Za-z0-9_]+)`?/is,
+      /^\s*desc(?:ribe)?\s+`?([A-Za-z0-9_]+)`?/is,
+      /\bfrom\s+`?([A-Za-z0-9_.]+)`?/is,
+      /\bjoin\s+`?([A-Za-z0-9_.]+)`?/is,
+    ];
+    for (const pattern of patterns) {
+      const match = normalized.match(pattern);
+      if (match) return { kind: 'table', resource_type: 'table', name: match[1].split('.').pop() };
+    }
+  }
+  return null;
+}
+
+async function verifyResourceExists(config, instanceName, dbName, resourceGuess) {
+  if (!resourceGuess || !dbName) return null;
+  const result = await fetchResourcesPayload(config, instanceName, resourceGuess.resource_type, { db_name: dbName });
+  const data = result.payload.data || [];
+  return Array.isArray(data) && data.includes(resourceGuess.name);
+}
+
+async function buildInstancesMap(config) {
+  const result = await fetchInstancesPayload(config);
+  const map = new Map();
+  for (const item of result.payload.data || []) map.set(item.instance_name, item);
+  return map;
+}
+
+async function resolveInstanceMeta(config, instanceName) {
+  if (!instanceName) return {};
+  const map = await buildInstancesMap(config);
+  return map.get(instanceName) || {};
+}
+
+async function resolveFavorite(config, alias) {
+  const favorites = await fetchFavoritesItems(config);
+  const matches = findFavoriteItems(favorites.items, alias);
+  if (!matches.length) throw new CliError('not_found', `Favorite alias not found: ${alias}`);
+  const exactMatches = matches.filter((item) => item.alias === alias);
+  let favoriteItem;
+  if (exactMatches.length > 1) {
+    throw new CliError('duplicate_alias', `Duplicate favorite alias: ${alias}. query_log_ids=${exactMatches.map((item) => item.id).join(', ')}`);
+  }
+  if (exactMatches.length) favoriteItem = exactMatches[0];
+  else if (matches.length === 1) favoriteItem = matches[0];
+  else throw new CliError('ambiguous_alias', `Favorite alias is ambiguous: ${alias}. matches=${matches.slice(0, 5).map((item) => item.alias).join(', ')}`);
+
+  const detailResult = await fetchQueryloginfoPayload(config, favoriteItem.id);
+  const rows = detailResult.payload.data || [];
+  if (!rows.length) throw new CliError('not_found', `queryloginfo returned no data for log_id=${favoriteItem.id}`);
+  const detail = rows[0];
+  const instanceMeta = await resolveInstanceMeta(config, detail.instance_name);
+  const dbType = instanceMeta.db_type || '';
+  const resourceGuess = guessResourceFromSql(dbType, detail.sqllog || '');
+  const resourceExists = await verifyResourceExists(config, detail.instance_name || '', detail.db_name || '', resourceGuess);
+  return {
+    alias: favoriteItem.alias,
+    query_log_id: String(favoriteItem.id),
+    instance_name: detail.instance_name || '',
+    instance_role: instanceMeta.type || '',
+    db_type: dbType,
+    db_name: detail.db_name || '',
+    schema_name: detail.schema_name || '',
+    sql: detail.sqllog || '',
+    favorite: detail.favorite,
+    created_at: detail.create_time || '',
+    user_display: detail.user_display || '',
+    resource: {
+      kind: resourceGuess ? resourceGuess.kind : '',
+      name: resourceGuess ? resourceGuess.name : '',
+      verified_exists: resourceExists,
+    },
+    raw: detail,
+  };
+}
+
+function resolveSqlFromArgv(argv, startIndex, options = {}) {
+  if (argv.length > startIndex) return argv.slice(startIndex).join(' ').trim();
+  const input = fs.readFileSync(0, 'utf8').trim();
+  if (!input && options.allowEmptyStdin) return '';
+  if (!input) throw new CliError('invalid_argument', 'SQL is empty', { exitCode: 2 });
+  return input;
+}
+
+function validateQueryForDbops(sql, dbType) {
+  if (!String(sql || '').trim()) throw new CliError('invalid_argument', 'SQL is empty', { exitCode: 2 });
+  if (['redis', 'mongo'].includes(dbType)) return;
+  checkReadonlySql(sql);
+}
+
+async function runQueryWithTarget(config, instanceName, dbName, sql, options = {}) {
+  const instanceMeta = options.dbType ? { db_type: options.dbType } : await resolveInstanceMeta(config, instanceName);
+  const dbType = options.dbType || instanceMeta.db_type || '';
+  validateQueryForDbops(sql, dbType);
+  const queryConfig = {
+    ...config,
+    instance_name: instanceName,
+    db_name: dbName,
+    schema_name: options.schemaName || '',
+    tb_name: options.tbName || '',
+  };
+  const result = await performJsonRequest(() => buildQueryRequest(queryConfig, sql));
+  ensureServicePayloadOk(result.payload, 'query');
+  return result.payload;
+}
+
+function printRows(payload) {
+  const data = payload.data || {};
+  if (data.full_sql) process.stderr.write(`-- ${redactText(data.full_sql)}\n`);
+  if (data.error) throw new CliError('service_error', String(data.error));
+  if (data.warning) process.stderr.write(`warning: ${redactText(data.warning)}\n`);
+  const columns = data.column_list || [];
+  const rows = data.rows || [];
+  if (columns.length) process.stdout.write(`${columns.map(String).join('\t')}\n`);
+  for (const row of rows) {
+    const values = row.map((value, index) => {
+      if (value === null || value === undefined) return 'NULL';
+      const column = columns[index] || '';
+      if (isSecretKey(column)) return typeof value === 'string' && isAlreadyRedacted(value) ? value : REDACTED;
+      return redactText(value);
+    });
+    process.stdout.write(`${values.join('\t')}\n`);
+  }
+}
+
+function printJson(value) {
+  process.stdout.write(`${JSON.stringify(redactValue(value), null, 2)}\n`);
+}
+
+function payloadItems(payload) {
+  if (!payload || typeof payload !== 'object') return [];
+  if (Array.isArray(payload.data)) return payload.data;
+  if (Array.isArray(payload.rows)) return payload.rows;
+  return [];
+}
+
+function payloadTotal(payload, items) {
+  if (payload && typeof payload === 'object' && Number.isFinite(Number(payload.total))) return Number(payload.total);
+  return items.length;
+}
+
+function addPresent(target, source, sourceKey, targetKey = sourceKey) {
+  if (!source || typeof source !== 'object') return;
+  const value = source[sourceKey];
+  if (value === undefined || value === null || value === '') return;
+  target[targetKey] = value;
+}
+
+function compactSql(sql, limit = 500) {
+  const text = String(sql || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)} [truncated]`;
+}
+
+function compactInstanceItem(item) {
+  if (!item || typeof item !== 'object') return item;
+  const output = {};
+  for (const key of ['instance_name', 'db_type', 'type', 'env', 'region', 'alias']) addPresent(output, item, key);
+  return output;
+}
+
+function compactResourceItem(item) {
+  if (!item || typeof item !== 'object') return item;
+  const output = {};
+  for (const key of ['name', 'db_name', 'schema_name', 'tb_name', 'table_name', 'resource_name', 'resource_type']) {
+    addPresent(output, item, key);
+  }
+  return Object.keys(output).length ? output : item;
+}
+
+function compactQuerylogItem(item) {
+  if (!item || typeof item !== 'object') return item;
+  const output = {};
+  for (const key of ['id', 'instance_name', 'db_type', 'db_name', 'schema_name', 'tb_name', 'favorite', 'status']) {
+    addPresent(output, item, key);
+  }
+  addPresent(output, item, 'create_time', 'created_at');
+  addPresent(output, item, 'created_at');
+  addPresent(output, item, 'user_display');
+  addPresent(output, item, 'user_name');
+  const sql = item.sqllog || item.sql || item.sql_content || item.full_sql;
+  if (sql) output.sql = compactSql(sql);
+  return output;
+}
+
+function compactPayloadList(payload, mapper) {
+  const items = payloadItems(payload).map(mapper);
+  return {
+    count: items.length,
+    items,
+  };
+}
+
+function compactQuerylogPayload(payload) {
+  const items = payloadItems(payload).map(compactQuerylogItem);
+  return {
+    total: payloadTotal(payload, items),
+    count: items.length,
+    items,
+  };
+}
+
+function compactMutationPayload(payload) {
+  const output = {};
+  addPresent(output, payload, 'status');
+  addPresent(output, payload, 'message');
+  addPresent(output, payload, 'error');
+  addPresent(output, payload, 'data');
+  if (!Object.keys(output).length) output.ok = true;
+  return output;
+}
+
+async function writeCompactJson(value) {
+  await new Promise((resolve) => {
+    process.stdout.write(`${JSON.stringify(redactValue(value))}\n`, resolve);
+  });
+}
+
+async function runQuery(argv) {
+  const sql = resolveSqlFromArgv(argv, 0, { allowEmptyStdin: argv.length === 0 });
+  if (!sql) {
+    printUsage();
+    return 1;
+  }
+  checkReadonlySql(sql);
+  const config = getRuntimeConfig({ requireQueryTarget: true });
+  const payload = await runQueryWithTarget(config, config.instance_name, config.db_name, sql, {
+    schemaName: config.schema_name,
+    tbName: config.tb_name,
+  });
+  printRows(payload);
+  return 0;
+}
+
+async function runQueryOn(argv) {
+  if (argv.length < 4) throw new CliError('invalid_argument', 'Usage: dbops-query query-on <instance_name> <db_name> <sql>', { exitCode: 2 });
+  const config = getRuntimeConfig();
+  const sql = resolveSqlFromArgv(argv, 3);
+  const payload = await runQueryWithTarget(config, argv[1], argv[2], sql);
+  printRows(payload);
+}
+
+async function runInstances(argv) {
+  const config = getRuntimeConfig();
+  const tagCode = argv.length >= 2 ? argv[1] : 'can_read';
+  const result = await performJsonRequest(() => buildApiRequest(config, 'GET', '/group/user_all_instances/', { 'tag_codes[]': tagCode }));
+  ensureServicePayloadOk(result.payload, 'instances');
+  printJson(compactPayloadList(result.payload, compactInstanceItem));
+}
+
+async function runResources(argv) {
+  if (argv.length < 3) {
+    throw new CliError('invalid_argument', 'Usage: dbops-query resources <instance_name> <database|table|schema> [db_name=...] [schema_name=...]', { exitCode: 2 });
+  }
+  const config = getRuntimeConfig();
+  const result = await fetchResourcesPayload(config, argv[1], argv[2], parseKeyValues(argv.slice(3)));
+  printJson(compactPayloadList(result.payload, compactResourceItem));
+}
+
+async function runQuerylog(argv) {
+  const config = getRuntimeConfig();
+  const result = await fetchQuerylogPayload(config, parseKeyValues(argv.slice(1)));
+  ensureServicePayloadOk(result.payload, 'querylog');
+  printJson(compactQuerylogPayload(result.payload));
+}
+
+async function runQueryloginfo(argv) {
+  if (argv.length < 2) throw new CliError('invalid_argument', 'Usage: dbops-query queryloginfo <log_id>', { exitCode: 2 });
+  const config = getRuntimeConfig();
+  const result = await fetchQueryloginfoPayload(config, argv[1]);
+  ensureServicePayloadOk(result.payload, 'queryloginfo');
+  printJson(compactQuerylogPayload(result.payload));
+}
+
+async function runFavorites() {
+  const config = getRuntimeConfig();
+  const result = await fetchFavoritesItems(config);
+  printJson({ count: result.items.length, items: result.items });
+}
+
+async function runFavoriteFind(argv) {
+  if (argv.length < 2) throw new CliError('invalid_argument', 'Usage: dbops-query favorite-find <keyword>', { exitCode: 2 });
+  const config = getRuntimeConfig();
+  const result = await fetchFavoritesItems(config);
+  const matches = result.items.filter((item) => item.alias.includes(argv[1]));
+  printJson({ count: matches.length, items: matches });
+}
+
+async function runFavorite(argv) {
+  if (argv.length < 3) throw new CliError('invalid_argument', 'Usage: dbops-query favorite <query_log_id> <alias>', { exitCode: 2 });
+  const config = getRuntimeConfig();
+  const result = await performJsonRequest(() => buildApiRequest(config, 'POST', '/query/favorite/', {
+    query_log_id: argv[1],
+    star: 'true',
+    alias: argv[2],
+  }));
+  ensureServicePayloadOk(result.payload, 'favorite');
+  printJson(compactMutationPayload(result.payload));
+}
+
+async function runUnfavorite(argv) {
+  if (argv.length < 2) throw new CliError('invalid_argument', 'Usage: dbops-query unfavorite <query_log_id>', { exitCode: 2 });
+  const config = getRuntimeConfig();
+  const result = await performJsonRequest(() => buildApiRequest(config, 'POST', '/query/favorite/', {
+    query_log_id: argv[1],
+    star: 'false',
+    alias: '',
+  }));
+  ensureServicePayloadOk(result.payload, 'unfavorite');
+  printJson(compactMutationPayload(result.payload));
+}
+
+async function runFavoriteInfo(argv) {
+  if (argv.length < 2) throw new CliError('invalid_argument', 'Usage: dbops-query favorite-info <alias>', { exitCode: 2 });
+  const info = await resolveFavorite(getRuntimeConfig(), argv[1]);
+  delete info.raw;
+  printJson(info);
+}
+
+async function runFavoriteRun(argv) {
+  if (argv.length < 2) throw new CliError('invalid_argument', 'Usage: dbops-query favorite-run <alias>', { exitCode: 2 });
+  const config = getRuntimeConfig();
+  const info = await resolveFavorite(config, argv[1]);
+  process.stderr.write(`-- favorite alias=${info.alias} instance=${info.instance_name} db_type=${info.db_type} db_name=${info.db_name}\n`);
+  printRows(await runQueryWithTarget(config, info.instance_name, info.db_name, info.sql, { dbType: info.db_type }));
+}
+
+async function runFavoriteQuery(argv) {
+  if (argv.length < 3) throw new CliError('invalid_argument', 'Usage: dbops-query favorite-query <alias> <sql>', { exitCode: 2 });
+  const config = getRuntimeConfig();
+  const info = await resolveFavorite(config, argv[1]);
+  const sql = resolveSqlFromArgv(argv, 2);
+  process.stderr.write(`-- favorite alias=${info.alias} instance=${info.instance_name} db_type=${info.db_type} db_name=${info.db_name}\n`);
+  printRows(await runQueryWithTarget(config, info.instance_name, info.db_name, sql, { dbType: info.db_type }));
+}
+
+function normalizedJsonPath(requestPath) {
+  const normalized = requestPath.startsWith('/') ? requestPath : `/${requestPath}`;
+  return normalized.startsWith('/query/') || normalized.startsWith('/instance/') || normalized.startsWith('/group/');
+}
+
+async function runApi(argv) {
+  if (argv.length < 3) throw new CliError('invalid_argument', 'Usage: dbops-query api <GET|POST> <path> [key=value ...]', { exitCode: 2 });
+  const config = getRuntimeConfig();
+  const method = argv[1];
+  const requestPath = argv[2];
+  const params = parseKeyValues(argv.slice(3));
+  if (normalizedJsonPath(requestPath)) {
+    const result = await performJsonRequest(() => buildApiRequest(config, method, requestPath, params));
+    printJson({ http_status: result.status, payload: result.payload });
+    return;
+  }
+  const result = await performTextRequest(() => buildApiRequest(config, method, requestPath, params));
+  printJson({ http_status: result.status, content_type: result.contentType, body: result.bodyText });
+}
+
+function parseAuthArgs(argv) {
+  const args = {
+    baseUrl: dbopsBaseUrl(),
+    cookieFile: DEFAULT_COOKIE_FILE,
+    storageState: DEFAULT_STORAGE_STATE,
+    authCheckUrl: dbopsAuthCheckUrl(),
+    targetUrl: dbopsLoginPageUrl(),
+    loginTimeout: DEFAULT_LOGIN_TIMEOUT_SECONDS,
+  };
+  for (let index = 1; index < argv.length; index += 1) {
+    const key = argv[index];
+    const value = argv[index + 1];
+    if (key === '--login-timeout') { args.loginTimeout = Number(value); index += 1; continue; }
+    if (key === '-h' || key === '--help') {
+      process.stdout.write('usage: dbops-query auth [--login-timeout SECONDS]\n');
+      return null;
+    }
+    throw new CliError('invalid_argument', `unknown argument: ${key}`, { exitCode: 2 });
+  }
+  return args;
+}
+
+async function resolvePlaywrightModulePath() {
+  try {
+    return path.dirname(require.resolve('playwright/package.json'));
+  } catch {
+  }
+  const root = path.join(os.homedir(), '.npm', '_npx');
+  const entries = await fsp.readdir(root, { withFileTypes: true }).catch(() => []);
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const packagePath = path.join(root, entry.name, 'node_modules', 'playwright', 'package.json');
+    try {
+      const stat = await fsp.stat(packagePath);
+      candidates.push({ packagePath, mtimeMs: stat.mtimeMs });
+    } catch {
+    }
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (!candidates.length) {
+    throw new CliError('playwright_missing', 'Playwright library package not found. Run scripts/skillctl setup --install or paste cookie into output/dbops-auth-cookie.txt manually.');
+  }
+  return path.dirname(candidates[0].packagePath);
+}
+
+function installBrowserAuthCloseHandlers(context, settleError) {
+  let pageCount = 0;
+
+  function cancelAuth() {
+    settleError(new Error('登录已取消或浏览器已关闭，auth 已停止。'));
+  }
+
+  function markPage(page) {
+    if (!page || typeof page.once !== 'function') return;
+    if (typeof page.isClosed === 'function' && page.isClosed()) return;
+    pageCount += 1;
+    page.once('close', () => {
+      pageCount = Math.max(0, pageCount - 1);
+      if (pageCount === 0) cancelAuth();
+    });
+  }
+
+  context.once('close', cancelAuth);
+  const browser = context.browser();
+  if (browser) browser.once('disconnected', cancelAuth);
+  for (const page of context.pages()) markPage(page);
+  context.on('page', markPage);
+
+  return {
+    markPage,
+    getPageCount: () => pageCount,
+  };
+}
+
+function hostFromUrl(url) {
+  return new URL(url).hostname;
+}
+
+function isCodemaoCookie(cookie) {
+  const domain = String(cookie.domain || '').replace(/^\./, '');
+  return domain === 'codemao.cn' || domain.endsWith('.codemao.cn');
+}
+
+function isDbopsCookie(cookie, baseUrl) {
+  const domain = String(cookie.domain || '').replace(/^\./, '');
+  return domain === hostFromUrl(baseUrl) || isCodemaoCookie(cookie);
+}
+
+function cookieNames(cookies) {
+  return cookies.map((cookie) => String(cookie.name || '')).filter(Boolean);
+}
+
+function missingRequiredCookies(cookies) {
+  const names = new Set(cookieNames(cookies));
+  const missing = Array.from(REQUIRED_COOKIE_NAMES).filter((name) => !names.has(name));
+  if (!AUTH_COOKIE_NAME_CANDIDATES.some((name) => names.has(name))) {
+    missing.push(`one of ${AUTH_COOKIE_NAME_CANDIDATES.join('/')}`);
+  }
+  return missing;
+}
+
+function hasRequiredCookies(cookies) {
+  return missingRequiredCookies(cookies).length === 0;
+}
+
+function buildCookieHeader(cookies) {
+  return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+}
+
+function normalizeUrlForCompare(urlValue) {
+  const url = new URL(urlValue);
+  url.hash = '';
+  return url.toString();
+}
+
+function looksLikeDbopsSuccess(response, args) {
+  if (!response.ok()) return false;
+  return normalizeUrlForCompare(response.url()) === normalizeUrlForCompare(args.authCheckUrl);
+}
+
+function dbopsAuthOutputPath(filePath) {
+  const relative = path.relative(SKILL_ROOT, filePath);
+  return relative && !relative.startsWith('..') ? relative : filePath;
+}
+
+function isDocumentResponse(response) {
+  const request = response.request && response.request();
+  if (!request || typeof request.resourceType !== 'function') return false;
+  return request.resourceType() === 'document';
+}
+
+function shouldNavigateToSqlquery(response, args) {
+  if (!response.ok() || !isDocumentResponse(response)) return false;
+  const url = new URL(response.url());
+  const baseUrl = new URL(args.baseUrl);
+  if (url.origin !== baseUrl.origin) return false;
+  if (normalizeUrlForCompare(url.toString()) === normalizeUrlForCompare(args.authCheckUrl)) return false;
+  return url.pathname.replace(/\/+$/, '') !== '/sqlquery';
+}
+
+function cleanupTempProfileDetached(tempRoot) {
+  if (!tempRoot) return;
+  const child = spawn(process.execPath, [
+    '-e',
+    [
+      "const fs = require('node:fs/promises');",
+      "const os = require('node:os');",
+      "const path = require('node:path');",
+      '',
+      '(async () => {',
+      "  const dir = path.resolve(process.argv[1] || '');",
+      '  const tmp = path.resolve(os.tmpdir());',
+      '  const basename = path.basename(dir);',
+      "  if (!dir.startsWith(tmp + path.sep) || !/^codemao-dbops-auth-login-[^/]+$/.test(basename)) return;",
+      '  const delays = [500, 1000, 2000, 4000, 8000, 8000];',
+      '  for (const delay of delays) {',
+      '    await new Promise((resolve) => setTimeout(resolve, delay));',
+      '    try {',
+      '      await fs.rm(dir, { recursive: true });',
+      '      return;',
+      '    } catch {',
+      '    }',
+      '  }',
+      '})().catch(() => {});',
+    ].join('\n'),
+    tempRoot,
+  ], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+}
+
+function closeAndCleanupDetached(context, tempRoot) {
+  if (context) context.close().catch(() => {});
+  cleanupTempProfileDetached(tempRoot);
+}
+
+async function writeAuthFiles(args, cookies) {
+  const dbopsCookies = cookies.filter((cookie) => isDbopsCookie(cookie, args.baseUrl));
+  const missing = missingRequiredCookies(dbopsCookies);
+  if (missing.length) throw new CliError('auth_cookie_missing', `required dbops cookies are missing: ${missing.join(', ')}`);
+  const cookieHeader = buildCookieHeader(dbopsCookies);
+  const generatedAt = new Date().toISOString();
+  const names = cookieNames(dbopsCookies);
+  await fsp.mkdir(path.dirname(args.cookieFile), { recursive: true });
+  await fsp.mkdir(path.dirname(args.storageState), { recursive: true });
+  await fsp.writeFile(args.storageState, `${JSON.stringify({ cookies: dbopsCookies, origins: [] }, null, 2)}\n`, 'utf8');
+  await fsp.writeFile(args.cookieFile, [
+    '# dbops auth cookie file',
+    `# generated_at: ${generatedAt}`,
+    '# source: playwright-node-dbops-query-auth',
+    `# storage_state_path: ${args.storageState}`,
+    `# cookie_names: ${names.join(', ')}`,
+    '# Replace the final line with a complete Cookie header to update manually.',
+    cookieHeader,
+    '',
+  ].join('\n'), 'utf8');
+  return {
+    base_url: args.baseUrl,
+    generated_at: generatedAt,
+    source: 'playwright-node-dbops-query-auth',
+    cookie_file_path: args.cookieFile,
+    storage_state_path: args.storageState,
+    cookie_count: dbopsCookies.length,
+    cookie_names: names,
+    has_required_cookies: true,
+    missing_required_cookies: [],
+  };
+}
+
+async function runAuth(argv) {
+  const args = parseAuthArgs(argv);
+  if (!args) return;
+  const playwrightModulePath = await resolvePlaywrightModulePath();
+  const { chromium } = require(playwrightModulePath);
+  const userDataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'codemao-dbops-auth-login-'));
+  const profileDir = path.join(userDataDir, 'profile');
+  const context = await chromium.launchPersistentContext(profileDir, {
+    channel: 'chrome',
+    headless: false,
+    chromiumSandbox: true,
+  });
+  let settled = false;
+  let timeoutId;
+  let authWriteInFlight = false;
+  let sqlqueryNavigationInFlight = false;
+  let sqlqueryNavigationAttempted = false;
+  let detachedCleanup = false;
+  let settleResolve;
+  let settleReject;
+  const settledPromise = new Promise((resolve, reject) => {
+    settleResolve = resolve;
+    settleReject = reject;
+  });
+
+  function settleSuccess(payload) {
+    if (settled) return;
+    settled = true;
+    if (timeoutId) clearTimeout(timeoutId);
+    settleResolve(payload);
+  }
+  function settleError(error) {
+    if (settled) return;
+    settled = true;
+    if (timeoutId) clearTimeout(timeoutId);
+    settleReject(error);
+  }
+  async function tryWriteFromContext() {
+    if (authWriteInFlight || settled) return false;
+    authWriteInFlight = true;
+    try {
+      const cookies = (await context.cookies()).filter((cookie) => isDbopsCookie(cookie, args.baseUrl));
+      if (!hasRequiredCookies(cookies)) return false;
+      const result = await writeAuthFiles(args, cookies);
+      await writeCompactJson({ step: 'auth-ok', cookie_file: dbopsAuthOutputPath(args.cookieFile) });
+      detachedCleanup = true;
+      closeAndCleanupDetached(context, userDataDir);
+      settleSuccess({ ...result, detachedCleanup: true });
+      return true;
+    } finally {
+      authWriteInFlight = false;
+    }
+  }
+  async function navigateToSqlquery(page) {
+    if (settled || sqlqueryNavigationInFlight || sqlqueryNavigationAttempted) return;
+    sqlqueryNavigationAttempted = true;
+    sqlqueryNavigationInFlight = true;
+    try {
+      await page.goto(args.targetUrl, { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' }).catch(() => {});
+    } finally {
+      sqlqueryNavigationInFlight = false;
+    }
+  }
+
+  try {
+    const browserLifecycle = installBrowserAuthCloseHandlers(context, settleError);
+    const page = context.pages()[0] || await context.newPage();
+    context.on('response', async (response) => {
+      if (settled) return;
+      try {
+        if (looksLikeDbopsSuccess(response, args)) {
+          await tryWriteFromContext();
+          return;
+        }
+        if (shouldNavigateToSqlquery(response, args)) await navigateToSqlquery(page);
+      } catch (error) {
+        settleError(error);
+      }
+    });
+    if (browserLifecycle.getPageCount() === 0) browserLifecycle.markPage(page);
+    timeoutId = setTimeout(() => settleError(new Error('登录等待超时，auth 已停止。')), Math.max(1, args.loginTimeout) * 1000);
+    await page.goto(args.targetUrl, { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' }).catch(() => {});
+    await writeCompactJson({ step: 'auth-opened' });
+    const result = await settledPromise;
+    if (result && result.detachedCleanup) return 'detached-exit';
+    return result;
+  } finally {
+    if (!detachedCleanup) {
+      await context.close().catch(() => {});
+      await fsp.rm(userDataDir, { recursive: true }).catch(() => {});
+    }
+  }
+}
+
+async function main(argv) {
+  const validation = validateArgs(argv);
+  if (validation.help) {
+    printUsage(process.stdout);
+    return 0;
+  }
+  if (validation.helpCommand) {
+    printCommandHelp(validation.helpCommand);
+    return 0;
+  }
+  if (validation.usage) {
+    printUsage();
+    return 1;
+  }
+  const command = argv[0];
+  if (command === 'auth') {
+    const result = await runAuth(argv);
+    if (result === 'detached-exit') process.exit(0);
+    return 0;
+  }
+  if (command === 'query-on') { await runQueryOn(argv); return 0; }
+  if (command === 'instances') { await runInstances(argv); return 0; }
+  if (command === 'resources') { await runResources(argv); return 0; }
+  if (command === 'querylog') { await runQuerylog(argv); return 0; }
+  if (command === 'queryloginfo') { await runQueryloginfo(argv); return 0; }
+  if (command === 'favorites' || command === 'favorite-list') { await runFavorites(argv); return 0; }
+  if (command === 'favorite-find') { await runFavoriteFind(argv); return 0; }
+  if (command === 'favorite') { await runFavorite(argv); return 0; }
+  if (command === 'unfavorite') { await runUnfavorite(argv); return 0; }
+  if (command === 'favorite-info') { await runFavoriteInfo(argv); return 0; }
+  if (command === 'favorite-run') { await runFavoriteRun(argv); return 0; }
+  if (command === 'favorite-query') { await runFavoriteQuery(argv); return 0; }
+  if (command === 'api') { await runApi(argv); return 0; }
+  return await runQuery(argv);
+}
+
+if (require.main === module) {
+  main(process.argv.slice(2)).then((exitCode) => {
+    process.exitCode = exitCode;
+  }).catch((error) => {
+    if (error instanceof CliError) {
+      process.stderr.write(`${error.toString()}\n`);
+      process.exitCode = error.exitCode;
+      return;
+    }
+    process.stderr.write(`[unexpected_error] non-retryable: ${error && error.message ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  checkReadonlySql,
+  validateArgs,
+  dbopsLoginPageUrl,
+  dbopsAuthCheckUrl,
+  shouldNavigateToSqlquery,
+  dbopsAuthOutputPath,
+  readCookieFromFile,
+  missingRequiredCookies,
+  installBrowserAuthCloseHandlers,
+  writeAuthFiles,
+};

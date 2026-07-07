@@ -1,0 +1,4 @@
+interface:
+  display_name: "Accept Tech Plan"
+  short_description: "方案验收、方案准入、技术评审、实现核验。"
+  default_prompt: "Use $accept-tech-plan to review this business feature technical plan as the primary artifact, determine whether this is 编码前方案准入 or 编码后实现核验 using user statements, PR/MR/diff, and git changed files when available, use requirement context when available, inspect the repository, and return a Chinese gate decision (通过/有条件通过/不通过) with blockers, pass conditions, required questions, and acceptance-document landing choices."

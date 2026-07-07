@@ -1,0 +1,4 @@
+interface:
+  display_name: "Technical HTML Deck"
+  short_description: "技术演示稿 HTML 生产线与质量门禁"
+  default_prompt: "Use $technical-html-deck to turn this technical source into a review-ready HTML presentation."

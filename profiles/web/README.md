@@ -16,11 +16,11 @@
 
 ## Usage
 
-在目标项目根目录复制安装整个 profile：
+在目标项目根目录从 GitHub source 安装整个 profile：
 
 ```bash
 env -u http_proxy -u https_proxy -u all_proxy \
-  npx --yes skills@latest add /Users/cm/Documents/me/skills/profiles/web \
+  npx --yes skills@latest add imchao9/skills/profiles/web \
   --agent codex --skill '*' --yes --copy --full-depth
 ```
 
@@ -28,6 +28,6 @@ env -u http_proxy -u https_proxy -u all_proxy \
 
 ```bash
 env -u http_proxy -u https_proxy -u all_proxy \
-  npx --yes skills@latest add /Users/cm/Documents/me/skills/profiles/web \
+  npx --yes skills@latest add imchao9/skills/profiles/web \
   --agent codex --skill agent-reach --yes --copy --full-depth
 ```

@@ -1,0 +1,23 @@
+{
+  "tools": {
+    "create_calendar_event": {
+      "name": "create_calendar_event",
+      "args": {
+        "summary": "$summary",
+        "startDateTime": "$startDateTime",
+        "endDateTime": "$endDateTime",
+        "timeZone": "$timeZone",
+        "description": "$description",
+        "freeBusy": "$freeBusy",
+        "attendees": "$attendeeIds"
+      }
+    },
+    "add_calendar_participant": {
+      "name": "add_calendar_participant",
+      "args": {
+        "eventId": "$eventId",
+        "attendeesToAdd": "$attendeesToAdd"
+      }
+    }
+  }
+}

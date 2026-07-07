@@ -1,0 +1,22 @@
+# Local DingTalk config (copy from *.example.json)
+references/*.local.json
+
+# Generated duty docs
+output/
+
+# Cached live stats snapshots
+references/live-stats-cache/*.json
+!references/live-stats-cache/*.example.json
+
+# Temp input / scratch
+.tmp-*
+*.tmp
+input.txt
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Node (if added later)
+node_modules/

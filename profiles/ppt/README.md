@@ -25,21 +25,23 @@
 
 ## Usage
 
-方式一：在目标项目根目录创建软链：
-
-```bash
-ln -s /Users/cm/Documents/me/skills/profiles/ppt/.agents .agents
-```
-
-方式二：用 `npx skills` 复制安装到目标项目：
+推荐方式：在目标项目根目录从 GitHub source 安装：
 
 ```bash
 env -u http_proxy -u https_proxy -u all_proxy \
-  npx --yes skills@latest add /Users/cm/Documents/me/skills/profiles/ppt \
+  npx --yes skills@latest add imchao9/skills/profiles/ppt \
   --agent codex --skill '*' --yes --copy --full-depth
 ```
 
 只安装单个 skill：
+
+```bash
+env -u http_proxy -u https_proxy -u all_proxy \
+  npx --yes skills@latest add imchao9/skills/profiles/ppt \
+  --agent codex --skill technical-html-deck --yes --copy --full-depth
+```
+
+本地路径安装只用于验证未推送改动：
 
 ```bash
 env -u http_proxy -u https_proxy -u all_proxy \
@@ -49,7 +51,8 @@ env -u http_proxy -u https_proxy -u all_proxy \
 
 ## Selection Rule
 
-- 技术演示稿默认：`technical-html-deck` + `cm-presentation-style`。
+- 默认 PPT / HTML PPT / 技术演示稿生产：先用 `technical-html-deck` 作为总控，再按需调用 `cm-presentation-style`、`html-ppt`、`ppt-master` 或视觉增强 skill。
+- 技术演示稿默认：`technical-html-deck` + `cm-presentation-style`，并执行截图质量门槛，不能只交付能渲染但很丑的页面。
 - 视觉增强 / 外宣封面 / 整页图片型 PPTX：`gpt-image2-ppt`。
 - 静态 HTML deck：`html-ppt`。
 - 可编辑 PPTX：`ppt-master`。

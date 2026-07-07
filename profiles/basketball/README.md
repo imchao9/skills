@@ -11,6 +11,6 @@
 
 ```bash
 env -u http_proxy -u https_proxy -u all_proxy \
-  npx --yes skills@latest add /Users/cm/Documents/me/skills/profiles/basketball \
+  npx --yes skills@latest add imchao9/skills/profiles/basketball \
   --agent codex --skill '*' --yes --copy --full-depth
 ```

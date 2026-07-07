@@ -1,0 +1,43 @@
+{
+  "profiles": {
+    "test-mysql": {
+      "source": "mysql",
+      "url": "jdbc:mysql://rm-bp1326x2083c1021v.mysql.rds.aliyuncs.com:3306/codecamp_marketing?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8",
+      "user": "test_all",
+      "password": "sealed:v1:srEyy1N0I8fOZyRd:U3IM3q3l7Z4t8KBE2bo:3EtHGEBbI78Exo669Txq0Q"
+    },        
+    "test-redis": {
+      "source": "redis",
+      "url": "redis://r-bp1a97853b5914d4289.redis.rds.aliyuncs.com:6379/0",
+      "password": "sealed:v1:6sNQkkEvuK-Yrzax:RM2jpZSfar4X5eXVkJtDpL3k7r7bhLHa:3v1G4ggardD_2KOwSvdS8g"
+    },    
+    "test-mongo": {
+      "source": "mongo",
+      "url": "mongodb://dds-bp160a9d81d43d041234.mongodb.rds.aliyuncs.com:3717,dds-bp160a9d81d43d042552.mongodb.rds.aliyuncs.com:3717/codecamp",
+      "user": "test_all",
+      "password": "sealed:v1:T5OA2FBycCW3hGDU:ApUaAlFt0Pii6TIMgWdvglCUiQ:K3cf5AE9SxqbrenGaX3BEw"
+    },
+    "staging-mysql": {
+      "source": "mysql",
+      "url": "jdbc:mysql://rm-bp1i9bwn6lj64i0s0.mysql.rds.aliyuncs.com:3306/codecamp_marketing",
+      "user": "stag_all",
+      "password": "sealed:v1:4prV7xeY7vC4Z7YA:cTTSYywXjU1GfBmL:DKFPkJn6Xsy31-VUcrQCgw"
+    },
+    "staging-redis": {
+      "source": "redis",
+      "url": "redis://r-bp1eeeb51fc1af04.redis.rds.aliyuncs.com:6379/0",
+      "password": "sealed:v1:ZkfWwXSoTDwinRNs:shk-i1C79xdrNuCtxI2dfgQqtByM0uGK:XKyIYbRQosrNgBgGmqF-dw"
+    },
+    "staging-redis-market": {
+      "source": "redis",
+      "url": "redis://r-bp1eeeb51fc1af04.redis.rds.aliyuncs.com:6379/25",
+      "password": "sealed:v1:2oUoW1RXM0C4K5Au:dXyBYOv6LzpSylroom2uLlRQ57LfeX4Q:P8rDPzcaFdOTOxFFIxkbAw"
+    },
+    "staging-mongo": {
+      "source": "mongo",
+      "url": "mongodb://dds-bp11dc5d842bbaf41.mongodb.rds.aliyuncs.com:3717,dds-bp11dc5d842bbaf42.mongodb.rds.aliyuncs.com:3717/codecamp",
+      "user": "staging_all",
+      "password": "sealed:v1:7nPWnefLTVVbk3NS:jcrQpOmUYjHhP3k-oEnaP02FO4EtoZc7:sEugmdbcPQuctE79E76Ccg"
+    }
+  }
+}
