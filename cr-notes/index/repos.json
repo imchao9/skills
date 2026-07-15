@@ -1,0 +1,9 @@
+{
+  "git@gitlab.codemao.cn:backend/platform-informatization/account/account_hub.git": {
+    "repo_key": "git@gitlab.codemao.cn:backend/platform-informatization/account/account_hub.git",
+    "repo_name": "account_hub",
+    "repo_slug": "account_hub",
+    "team": "platform-informatization",
+    "updated_at": "2026-07-15T08:44:30.401399+00:00"
+  }
+}
