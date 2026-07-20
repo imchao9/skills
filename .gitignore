@@ -1,7 +1,13 @@
 .DS_Store
 debug/
+/skills/
 skills-lock.json
+!profiles/*/skills-lock.json
+profiles/*/.agents/skills/*.zip
+node_modules/
 *.pyc
 __pycache__/
 .agents/skills/*/data/
 profiles/*/.agents/skills/*/data/
+.agents/skills/*/output/
+profiles/*/.agents/skills/*/output/

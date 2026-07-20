@@ -1,0 +1,9 @@
+{
+  "defaults": {
+    "instanceName": "",
+    "dbName": "",
+    "schemaName": "",
+    "tableName": "",
+    "limitNum": 100
+  }
+}

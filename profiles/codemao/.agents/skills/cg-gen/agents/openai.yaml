@@ -1,7 +1,7 @@
 interface:
   display_name: "cg-gen"
-  short_description: "Java/Kotlin 代码生成与审查技能，支持按需加载经验卡"
-  default_prompt: "使用 $cg-gen 处理 Java/Kotlin 后端任务。先选择 Implement Mode 或 Review-Only Mode，再判定 Trigger Profile 并按 Rule Activation Matrix 激活规则。叙述默认中文输出。若输入中包含来自 cg-req 的 RequirementContext，则直接作为当前需求来源并用于方案映射，不再重复读取原始需求文档。执行项目规范发现与版本基线发现；若触及 MySQL/ES/Spring 等技术面则激活对应门禁。执行 Learning Discovery：扫描 docs/rule/codegen-learnings，解析五段经验卡（场景/核心约束/验证守卫/风险预警/AI提示词适配建议）+ 正文后单段最小 machine_block（id/keywords/problem_pattern/recommended_actions）。先用 machine_block 匹配，再从五段提取 trigger/problem/actions 做语义辅助，最多加载 Top-N=3。缺五段或缺 trailing machine_block 必填项则视为无效卡并忽略。Validation 必须仅输出 Activated Rules 对应子项，未触发项不输出。Rules Applied 仅在 learning_recall_alignment 触发时输出 Matched/Applied/Deferred Learnings。"
+  short_description: "Java/Kotlin 后端实现、方案和审查技能，自动启用必要门禁"
+  default_prompt: "使用 $cg-gen 处理这个 Java/Kotlin 后端任务：<描述需求或贴 RequirementContext>"
 
 policy:
   allow_implicit_invocation: true

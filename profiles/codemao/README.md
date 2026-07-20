@@ -13,7 +13,7 @@ git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git
 当前导入的 upstream commit：
 
 ```text
-2adf6591ac3b6210e364b40943e6ac8978248775
+3bcd48a5bd8551851e6620022bf2b6a389d1383f
 ```
 
 导入时使用根目录 skill 源文件，不使用 upstream 的 `.agents/skills/` 生成态。
@@ -24,6 +24,7 @@ git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git
 
 - `accept-tech-plan`
 - `cg-gen`
+- `cg-req`
 - `codemao-troubleshoot`
 - `crp-deploy`
 - `dingtalk-mcp-reader`
@@ -34,8 +35,18 @@ git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git
 
 ## 升级方式
 
-先刷新 upstream 仓库，再复制根目录 skill 源文件到本 profile。
+在本目录重新执行同一条 GitLab source 安装命令即可。
+命令会自动发现 upstream 新增的 skill，并更新 `skills-lock.json`。
 
-复制后必须看 Git diff，确认没有带入运行数据、凭证、历史审查结果或机器本地输出。
+```bash
+cd /Users/cm/Documents/Me/skills/profiles/codemao
+env -u http_proxy -u https_proxy -u all_proxy \
+  npx --yes skills@latest add \
+  git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git \
+  --agent codex --skill '*' --yes --copy --full-depth
+```
+
+更新后必须看 Git diff，确认没有带入运行数据、凭证、历史审查结果或机器本地输出。
+`data/`、`output/` 和 Python 缓存目录不纳入本 profile 的 Git 内容。
 
 稳定高频的公司 skill 可以从这里晋级到 `profiles/global-runtime`，但晋级时需要说明触发场景和保留理由。

@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "skills": {
+    "cavecrew": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/cavecrew/SKILL.md",
+      "computedHash": "505d836228d1c5e14834ff5d62aad72390c7d27f79c6aa7f9a7a55ed6606d6a2"
+    },
+    "caveman": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/caveman/SKILL.md",
+      "computedHash": "dfbf85749fd474feeb0bbe60c779795ecd5dbec0083299b56e68916bc3ddd8c9"
+    },
+    "caveman-commit": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/caveman-commit/SKILL.md",
+      "computedHash": "f456ea0564875e46858890ac39ee701ecb9c601c72a2da1e6ce6bd5f9fc5d817"
+    },
+    "caveman-compress": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/caveman-compress/SKILL.md",
+      "computedHash": "b8cbfec00b620f0944960a9bb4072f262cf816c1d3c82e6dbded35c30b4c5d0b"
+    },
+    "caveman-help": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/caveman-help/SKILL.md",
+      "computedHash": "2c21437427e98df1eacabaa0b055b5256a308b2191feea3ca2df6a9418e76cb1"
+    },
+    "caveman-review": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/caveman-review/SKILL.md",
+      "computedHash": "fb7214a1c5793bae6ba8b1be4329e2e6f40dbec6dd911dfb335ad29f09c316a1"
+    },
+    "caveman-stats": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/caveman-stats/SKILL.md",
+      "computedHash": "47ce2de3d6cb39a75047b5c962e4eb3da15594e7397c94103e9a104d42626553"
+    },
+    "ce-compound": {
+      "source": "everyinc/compound-engineering-plugin",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/ce-compound/SKILL.md",
+      "computedHash": "16d1801d58b0633ea242e3ae6c2d3a15dca12873c06d7520b244b7d6ef0d7f5a"
+    },
+    "draw-ui": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/draw-ui/SKILL.md",
+      "computedHash": "1a49e22efc462610af9d38c0da79f41feaa843eb3f6854717f2c667038e3fece"
+    },
+    "frontend-delivery-workflow": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/frontend-delivery-workflow/SKILL.md",
+      "computedHash": "f96539b3c22d8c4e00e1f93ba0ae3a03fe4f5ddfd0c57a3d3a34f768997bab39"
+    },
+    "grok-research": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/grok-research/SKILL.md",
+      "computedHash": "62dc71b5e960ee1f923a4f6677c3a1d232deaa96e91de61210cdd0ac8a6e50d0"
+    },
+    "huashu-design": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/huashu-design/SKILL.md",
+      "computedHash": "526877a25f05d0b24d5b1a86413595b196e12affb83be7c50992f90d63596c76"
+    },
+    "review": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/review/SKILL.md",
+      "computedHash": "4a2b10bb81e568516c52018e73b8255a02066024257d7c907fa65826d62bc8dd"
+    },
+    "web-access": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/web-access/SKILL.md",
+      "computedHash": "8b045544b9e5d94d0a3d4678330f157c874bc4149737faaeff052b5390ac4e4a"
+    },
+    "write-a-skill": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/write-a-skill/SKILL.md",
+      "computedHash": "b44d8aab2ead83c716e01af4c9a24ccc4575ce70ad58ec4f1749fb88c9cc82ba"
+    },
+    "zoom-out": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/zoom-out/SKILL.md",
+      "computedHash": "8357aeaece3b709c442eab67e64b86844e05e2f1ea95b109565eba50b6def36e"
+    }
+  }
+}

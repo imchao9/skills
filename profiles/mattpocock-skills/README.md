@@ -9,3 +9,9 @@ mattpocock/skills
 ```
 
 这些 skill 不属于本地自研；需要更新时重新从该 GitHub source 安装到本 profile。
+
+本 profile 的本地安装/验证入口是：
+
+```text
+/Users/cm/Documents/Me/skills/profiles/mattpocock-skills/.agents
+```

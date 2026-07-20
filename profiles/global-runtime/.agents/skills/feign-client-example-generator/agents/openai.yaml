@@ -1,0 +1,5 @@
+version: 1
+interface:
+  display_name: Feign Example Builder
+  description: Interactive FeignClient picker and Java/Kotlin example generator from implementation mapping
+  suggested_prompt: Generate Java and Kotlin call examples from FeignClient implementation mapping.

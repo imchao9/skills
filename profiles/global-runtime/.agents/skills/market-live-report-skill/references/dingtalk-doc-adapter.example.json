@@ -1,0 +1,32 @@
+{
+  "tools": {
+    "search_documents": {
+      "name": "search_documents",
+      "args": {
+        "keyword": "$keyword"
+      }
+    },
+    "create_document": {
+      "name": "create_document",
+      "args": {
+        "name": "$name",
+        "markdown": "$markdown",
+        "folderId": "$folder_id"
+      }
+    },
+    "update_document": {
+      "name": "update_document",
+      "args": {
+        "nodeId": "$node_id",
+        "markdown": "$markdown",
+        "mode": "$mode"
+      }
+    },
+    "get_document_info": {
+      "name": "get_document_info",
+      "args": {
+        "nodeId": "$node_id"
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+interface:
+  display_name: "cg-req"
+  short_description: "读取钉钉、本地或对话需求，校准理解后生成后端/前端技术方案"
+  default_prompt: "使用 $cg-req 做需求收集：读取钉钉、本地方案或通过对话整理需求，先校准理解，再生成需求清单，并按影响范围生成后端、前端或全栈技术方案。跨前后端项目时会识别当前项目角色；缺少另一端目录时只预览并询问补充，不伪装完整交付。钉钉来源按可用 MCP 能力读取正文、表格、文件、图片和附件；缺口必须标记。"
+
+policy:
+  allow_implicit_invocation: false

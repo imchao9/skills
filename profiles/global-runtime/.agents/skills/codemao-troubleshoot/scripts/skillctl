@@ -1,0 +1,325 @@
+#!/usr/bin/env node
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+const SKILL_ROOT = path.resolve(__dirname, '..');
+const SEAL_PREFIX = 'sealed:v1:';
+const SEALING_SECRET = 'codemao-troubleshoot-offline-data-query-v1';
+const SEALING_KEY = crypto.createHash('sha256').update(SEALING_SECRET).digest();
+const REDACTED = '<redacted>';
+const CIRCULAR = '[Circular]';
+const SECRET_KEY_RE = /^(password|passwd|pwd|pass|secret|token|cookie|authorization|csrf|access[-_]?key|access[-_]?key[-_]?secret|accesskey|accesskeysecret|private[-_]?key|privatekey|session|sessionid|jsessionid|sid)$/i;
+const SECRET_KEY_TEXT = '(?:password|passwd|pwd|pass|secret|token|cookie|authorization|csrf|access[-_]?key|access[-_]?key[-_]?secret|accesskey|accesskeysecret|private[-_]?key|privatekey|session|sessionid|jsessionid|sid)';
+
+function base64url(buffer) {
+  return Buffer.from(buffer).toString('base64url');
+}
+
+function fromBase64url(value) {
+  return Buffer.from(value, 'base64url');
+}
+
+function isSealedCredential(value) {
+  return String(value || '').startsWith(SEAL_PREFIX);
+}
+
+function sealCredential(plaintext) {
+  const value = String(plaintext || '');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', SEALING_KEY, iv);
+  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${SEAL_PREFIX}${base64url(iv)}:${base64url(ciphertext)}:${base64url(authTag)}`;
+}
+
+function unsealCredential(value) {
+  const raw = String(value || '').trim();
+  if (!isSealedCredential(raw)) return raw;
+
+  const parts = raw.slice(SEAL_PREFIX.length).split(':');
+  if (parts.length !== 3 || parts.some((part) => !part)) {
+    throw new Error('credential_invalid: invalid sealed credential format');
+  }
+
+  try {
+    const [ivText, ciphertextText, authTagText] = parts;
+    const decipher = crypto.createDecipheriv('aes-256-gcm', SEALING_KEY, fromBase64url(ivText));
+    decipher.setAuthTag(fromBase64url(authTagText));
+    return Buffer.concat([
+      decipher.update(fromBase64url(ciphertextText)),
+      decipher.final(),
+    ]).toString('utf8');
+  } catch (error) {
+    throw new Error('credential_invalid: sealed credential cannot be decrypted or was modified');
+  }
+}
+
+function checkCredential(value) {
+  unsealCredential(value);
+  return true;
+}
+
+function isAlreadyRedacted(value) {
+  const text = String(value || '').trim();
+  return text === REDACTED
+    || /^\[redacted\]$/i.test(text)
+    || /^\*+$/.test(text)
+    || /^sealed:v1:/i.test(text);
+}
+
+function isSecretKey(key) {
+  return SECRET_KEY_RE.test(String(key || ''));
+}
+
+function maskMobileNumbers(text) {
+  return String(text).replace(/(^|[^\d*])((1[3-9]\d)\d{4}(\d{4}))(?![\d*])/g, (_match, prefix, _phone, head, tail) => `${prefix}${head}****${tail}`);
+}
+
+function redactJsonLikePairs(text) {
+  return String(text).replace(
+    /("([^"\\]*(?:\\.[^"\\]*)*)"\s*:\s*)("([^"\\]*(?:\\.[^"\\]*)*)"|[^,\n\r}\]]+)/g,
+    (match, prefix, rawKey, rawValue, quotedValue) => {
+      if (!isSecretKey(rawKey)) return match;
+      const value = quotedValue === undefined ? String(rawValue || '').trim() : quotedValue;
+      if (isAlreadyRedacted(value)) return match;
+      return `${prefix}"${REDACTED}"`;
+    },
+  );
+}
+
+function redactHeaderLikePairs(text) {
+  return String(text).replace(
+    new RegExp(`\\b(${SECRET_KEY_TEXT})\\b\\s*(:)\\s*(Bearer\\s+)?[^\\s,;]+`, 'gi'),
+    (match, key, separator) => {
+      const value = match.slice(match.indexOf(separator) + separator.length).trim();
+      if (isAlreadyRedacted(value)) return match;
+      return `${key}${separator} ${REDACTED}`;
+    },
+  );
+}
+
+function redactKeyValuePairs(text) {
+  return String(text).replace(
+    new RegExp(`\\b(${SECRET_KEY_TEXT})\\b\\s*(=)\\s*([^\\s,;]+)`, 'gi'),
+    (match, key, separator, value) => {
+      if (isAlreadyRedacted(value)) return match;
+      return `${key}${separator}${REDACTED}`;
+    },
+  );
+}
+
+function redactText(value) {
+  try {
+    const text = String(value);
+    if (!text) return text;
+    if (isAlreadyRedacted(text)) return text;
+    return maskMobileNumbers(redactKeyValuePairs(redactHeaderLikePairs(redactJsonLikePairs(text))));
+  } catch (_error) {
+    return REDACTED;
+  }
+}
+
+function redactValue(value, seen = new WeakSet()) {
+  try {
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') return redactText(value);
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value;
+    if (Array.isArray(value)) return value.map((item) => redactValue(item, seen));
+    if (typeof value !== 'object') return value;
+    if (seen.has(value)) return CIRCULAR;
+    seen.add(value);
+
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (isSecretKey(key)) {
+        output[key] = typeof item === 'string' && isAlreadyRedacted(item) ? item : REDACTED;
+      } else {
+        output[key] = redactValue(item, seen);
+      }
+    }
+    seen.delete(value);
+    return output;
+  } catch (_error) {
+    return REDACTED;
+  }
+}
+
+function readStdin() {
+  return fs.readFileSync(0, 'utf8').trim();
+}
+
+function parseNodeMajor(versionText) {
+  const match = /^v?(\d+)/.exec(String(versionText || '').trim());
+  return match ? Number(match[1]) : 0;
+}
+
+function commandExists(command, args = ['--version']) {
+  const result = spawnSync(command, args, { encoding: 'utf8' });
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  };
+}
+
+function resolvePackage(packageName) {
+  try {
+    return require.resolve(`${packageName}/package.json`, {
+      paths: [SKILL_ROOT, __dirname, process.cwd()],
+    });
+  } catch (error) {
+    return '';
+  }
+}
+
+function chromePath() {
+  const configured = process.env.CHROME_PATH || '';
+  if (configured && fs.existsSync(configured)) return configured;
+
+  const candidates = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+function setupCheck() {
+  const lines = [];
+  let ok = true;
+
+  const nodeVersion = process.version;
+  if (parseNodeMajor(nodeVersion) >= 20) {
+    lines.push(`[ok] node ${nodeVersion}`);
+  } else {
+    ok = false;
+    lines.push(`[missing] node >= 20 (found ${nodeVersion || 'none'})`);
+  }
+
+  const npm = commandExists('npm');
+  if (npm.ok) {
+    lines.push(`[ok] npm ${npm.stdout.trim()}`);
+  } else {
+    ok = false;
+    lines.push('[missing] npm');
+  }
+
+  const lockfile = path.join(SKILL_ROOT, 'package-lock.json');
+  if (fs.existsSync(lockfile)) {
+    lines.push('[ok] package-lock.json');
+  } else {
+    ok = false;
+    lines.push('[missing] package-lock.json');
+  }
+
+  for (const packageName of ['mysql2', 'redis', 'mongodb', 'playwright']) {
+    if (resolvePackage(packageName)) {
+      lines.push(`[ok] ${packageName}`);
+    } else {
+      ok = false;
+      lines.push(`[missing] ${packageName}`);
+    }
+  }
+
+  const chrome = chromePath();
+  if (chrome) {
+    lines.push(`[ok] chrome ${chrome}`);
+  } else {
+    ok = false;
+    lines.push('[missing] chrome');
+    lines.push('[action] install Google Chrome or set CHROME_PATH');
+  }
+
+  if (!ok) lines.push('[action] run scripts/skillctl setup --install to install Node dependencies');
+  else lines.push('setup ready');
+
+  return { ok, output: `${lines.join('\n')}\n` };
+}
+
+function setupInstall() {
+  const env = {
+    ...process.env,
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
+  };
+  const result = spawnSync('npm', ['ci'], {
+    cwd: SKILL_ROOT,
+    env,
+    stdio: 'inherit',
+  });
+  if (result.status !== 0) return result.status || 1;
+
+  const checked = setupCheck();
+  process.stdout.write(checked.output);
+  return checked.ok ? 0 : 1;
+}
+
+function usage() {
+  return `Usage:
+  skillctl setup --check
+  skillctl setup --install
+  skillctl credential seal
+  skillctl credential check
+`;
+}
+
+function main(argv) {
+  const [group, command] = argv;
+
+  if (!group || group === '-h' || group === '--help') {
+    process.stdout.write(usage());
+    return 0;
+  }
+
+  if (group === 'credential') {
+    if (command === 'seal') {
+      process.stdout.write(`${sealCredential(readStdin())}\n`);
+      return 0;
+    }
+    if (command === 'check') {
+      try {
+        checkCredential(readStdin());
+        process.stdout.write('credential ok\n');
+        return 0;
+      } catch (error) {
+        process.stderr.write(`[${error.message}]\n`);
+        return 2;
+      }
+    }
+    process.stderr.write(`[unsupported_command] unsupported credential command: ${command || ''}\n`);
+    return 2;
+  }
+
+  if (group === 'setup') {
+    if (command === '--check' || !command) {
+      const checked = setupCheck();
+      process.stdout.write(checked.output);
+      return checked.ok ? 0 : 1;
+    }
+    if (command === '--install') {
+      return setupInstall();
+    }
+    process.stderr.write(`[unsupported_argument] unsupported setup argument: ${command}\n`);
+    return 2;
+  }
+
+  process.stderr.write(`[unsupported_command] unsupported command: ${group}\n`);
+  return 2;
+}
+
+if (require.main === module) {
+  process.exitCode = main(process.argv.slice(2));
+}
+
+module.exports = {
+  REDACTED,
+  checkCredential,
+  isSealedCredential,
+  isAlreadyRedacted,
+  isSecretKey,
+  redactText,
+  redactValue,
+  sealCredential,
+  setupCheck,
+  unsealCredential,
+};

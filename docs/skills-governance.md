@@ -76,6 +76,9 @@ GitHub 个人或 vendor 仓库先进入 `profiles/vendor-lab`，除非它明显�
 
 升级后必须看 Git diff。
 
+进入 `profiles/global-runtime` 的外部来源 skill，还必须在 `profiles/global-runtime/UPSTREAM.md` 记录 canonical source 和同步策略。
+跨 skill 的个人触发、重试和时间预算应放在全局 `AGENTS.md`，不要作为本地补丁写回可跟随上游的运行副本。
+
 不要直接在 `~/.agents/skills` 里改文件。
 
 需要全局可用时，先改 `profiles/global-runtime/.agents/skills`，再让 `~/.agents/skills` 通过软链跟随。
@@ -97,6 +100,8 @@ Lock 是 profile 级文件，文件名是 `skills-lock.json`。
 ## 项目使用规则
 
 业务项目默认从 GitHub source 安装某个 profile。
+Git source 安装使用 `--copy`，因此目标项目拿到的是复制后的 `.agents/skills`，不是对本仓库的引用。
+项目升级时需要重新运行同一条 Git source `add` 命令，并提交目标项目自己的 `.agents/skills` 和 `skills-lock.json`。
 
 例如：
 
@@ -120,6 +125,8 @@ Git source 只包含已经提交并推送到 GitHub 的内容。
 本地未提交或未推送的 profile 变化，不能作为其它项目的升级来源。
 
 本地路径安装和软链只用于本机开发、调试或临时验证。
+只有目标项目的 `.agents` 本身是 symlink 时，才算引用源 profile。
+symlink 项目会实时跟随源 profile，不适合作为多数长期业务项目的默认模式。
 
 不要把所有 profile 混装到业务项目，除非明确要做一次全量调试。
 

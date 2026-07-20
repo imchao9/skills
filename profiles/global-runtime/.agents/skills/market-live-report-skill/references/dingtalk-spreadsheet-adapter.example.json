@@ -1,0 +1,75 @@
+{
+  "tools": {
+    "create_sheet": {
+      "name": "create_sheet",
+      "args": {
+        "name": "$sheet_name",
+        "nodeId": "$node_id"
+      }
+    },
+    "get_all_sheets": {
+      "name": "get_all_sheets",
+      "args": {
+        "nodeId": "$node_id"
+      }
+    },
+    "get_sheet": {
+      "name": "get_sheet",
+      "args": {
+        "nodeId": "$node_id",
+        "sheetId": "$sheet_id"
+      }
+    },
+    "get_range": {
+      "name": "get_range",
+      "args": {
+        "nodeId": "$node_id",
+        "sheetId": "$sheet_id",
+        "range": "$range_address"
+      }
+    },
+    "update_range": {
+      "name": "update_range",
+      "args": {
+        "nodeId": "$node_id",
+        "sheetId": "$sheet_id",
+        "rangeAddress": "$range_address",
+        "values": "$values"
+      }
+    },
+    "append_rows": {
+      "name": "append_rows",
+      "args": {
+        "nodeId": "$node_id",
+        "sheetId": "$sheet_id",
+        "values": "$values"
+      }
+    },
+    "insert_dimension": {
+      "name": "insert_dimension",
+      "args": {
+        "nodeId": "$node_id",
+        "sheetId": "$sheet_id",
+        "position": "$position",
+        "dimension": "$dimension",
+        "length": "$length"
+      }
+    },
+    "merge_cells": {
+      "name": "merge_cells",
+      "args": {
+        "nodeId": "$node_id",
+        "sheetId": "$sheet_id",
+        "rangeAddress": "$range_address"
+      }
+    },
+    "unmerge_range": {
+      "name": "unmerge_range",
+      "args": {
+        "nodeId": "$node_id",
+        "sheetId": "$sheet_id",
+        "rangeAddress": "$range_address"
+      }
+    }
+  }
+}

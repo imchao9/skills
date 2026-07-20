@@ -94,6 +94,7 @@ http://127.0.0.1:8765/
 
 这是推荐方式。
 目标项目应根据 Git 仓库安装和升级，而不是依赖本机目录手工复制。
+这种方式会把 skill 复制进目标项目自己的 `.agents/skills/`，不是引用本仓库目录。
 
 在目标项目根目录执行，安装默认 core profile：
 
@@ -165,6 +166,37 @@ env -u http_proxy -u https_proxy -u all_proxy \
 实测 Git source 支持 profile 子路径，例如 `imchao9/skills/profiles/ppt`。
 目标项目应优先记录 Git source 的 `skills-lock.json`，后续升级重新运行同一条 Git source `add` 命令，或在 CLI 支持时使用 `skills update`。
 当前 `skills@latest` 对 local source 的 `npx skills update --project` 不生效；本地路径安装只作为未推送改动的临时验证。
+
+## 升级全局和项目
+
+升级全局运行态：
+
+1. 先更新对应来源 profile，例如 `profiles/mattpocock-skills`、`profiles/web`、`profiles/codemao`。
+2. 按 `profiles/global-runtime/UPSTREAM.md` 逐项同步到 `profiles/global-runtime/.agents/skills`。
+3. 验证 `profiles/global-runtime/.agents` 能被 `skills@latest` 识别。
+4. 提交并推送本仓库。
+
+因为 `~/.agents/skills` 是软链到 `profiles/global-runtime/.agents/skills`，全局运行态会实时跟随本仓库工作区。
+
+升级业务项目：
+
+1. 先确保本仓库的 profile 变更已经 commit 并 push。
+2. 在目标项目根目录重新运行原来的 Git source `add` 命令。
+3. 提交目标项目更新后的 `.agents/skills/` 和 `skills-lock.json`。
+
+例如同步 PPT profile：
+
+```bash
+env -u http_proxy -u https_proxy -u all_proxy \
+  npx --yes skills@latest add imchao9/skills/profiles/ppt \
+  --agent codex --skill '*' --yes --copy --full-depth
+```
+
+判断项目当前是不是引用：
+
+- 如果目标项目 `.agents` 是 symlink，它是引用，会跟随源 profile 实时变化。
+- 如果目标项目 `.agents/skills/<skill-name>/SKILL.md` 是普通文件，它是复制安装，需要重新运行 `npx skills add` 才会升级。
+- 长期项目默认使用复制安装，只有本机调试项目才建议使用 symlink。
 
 ## 添加新的 Skill
 

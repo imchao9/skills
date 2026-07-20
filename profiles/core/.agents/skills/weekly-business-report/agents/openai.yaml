@@ -1,0 +1,4 @@
+interface:
+  display_name: "Weekly Business Report"
+  short_description: "Build recurring weekly reports"
+  default_prompt: "Use $weekly-business-report to generate or refresh the local weekly business report."

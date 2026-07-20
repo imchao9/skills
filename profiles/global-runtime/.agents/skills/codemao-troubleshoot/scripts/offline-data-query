@@ -1,0 +1,630 @@
+#!/usr/bin/env node
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { URL } = require('node:url');
+const { isSealedCredential, unsealCredential } = require('./skillctl');
+
+const SKILL_ROOT = path.resolve(__dirname, '..');
+const DEFAULT_CONFIG_FILE = path.join(__dirname, 'offline-data-query.config.json');
+const READONLY_SQL_PREFIXES = [
+  'select ',
+  'show ',
+  'desc ',
+  'describe ',
+  'explain ',
+];
+const READONLY_REDIS_COMMANDS = new Set([
+  'DBSIZE',
+  'EXISTS',
+  'GET',
+  'HGET',
+  'HGETALL',
+  'HEXISTS',
+  'HLEN',
+  'HSCAN',
+  'LLEN',
+  'LRANGE',
+  'MGET',
+  'PING',
+  'PTTL',
+  'SCAN',
+  'SCARD',
+  'SISMEMBER',
+  'SMEMBERS',
+  'SSCAN',
+  'TTL',
+  'TYPE',
+  'ZCARD',
+  'ZRANGE',
+  'ZREVRANGE',
+  'ZSCAN',
+]);
+const READONLY_MONGO_OPS = new Set([
+  'countDocuments',
+  'distinct',
+  'find',
+  'findOne',
+  'listCollections',
+]);
+const DEFAULT_MONGO_LIMIT = 10;
+const MAX_MONGO_LIMIT = 100;
+
+const USAGE = `Usage:
+  offline-data-query --profile PROFILE "SELECT * FROM tbl_xxx LIMIT 5"
+  offline-data-query --profile REDIS_PROFILE "TYPE cache_key"
+  offline-data-query --profile MONGO_PROFILE '{"op":"listCollections","limit":5}'
+  offline-data-query --source mysql|redis|mongo --url URL [--user USER --password sealed:v1:...] QUERY
+  echo "SHOW INDEX FROM tbl_xxx" | offline-data-query --profile PROFILE
+
+Options:
+  --profile PROFILE          Data source profile in offline-data-query.config.json
+  --source mysql|redis|mongo Temporary data source type. Mutually exclusive with --profile
+  --url URL                  Temporary data source URL
+  --user USER                Temporary data source user for mysql or mongo
+  --password PASSWORD        Sealed password only; plaintext is rejected
+  --connect-timeout-ms N     Connect timeout, default 5000
+  --query-timeout-ms N       Query timeout, default 10000
+  -h, --help                 Show help
+
+Config:
+  OFFLINE_DATA_QUERY_CONFIG_FILE
+`;
+
+class CliError extends Error {
+  constructor(code, message, exitCode = 1) {
+    super(message);
+    this.code = code;
+    this.exitCode = exitCode;
+  }
+}
+
+function printUsage(stream = process.stdout) {
+  stream.write(USAGE.endsWith('\n') ? USAGE : `${USAGE}\n`);
+}
+
+function parsePositiveInteger(value, name) {
+  if (!/^\d+$/.test(String(value || ''))) {
+    throw new CliError('invalid_argument', `${name} must be a positive integer`, 2);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new CliError('invalid_argument', `${name} must be a positive integer`, 2);
+  }
+  return parsed;
+}
+
+function parseArgs(argv) {
+  const args = {
+    profile: '',
+    source: '',
+    url: '',
+    user: '',
+    password: '',
+    connectTimeoutMs: 5000,
+    queryTimeoutMs: 10000,
+    queryArgs: [],
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '-h' || arg === '--help') return { help: true };
+    if (arg === '--profile') {
+      const value = argv[index + 1];
+      if (!value) throw new CliError('profile_missing', '--profile is required', 2);
+      args.profile = value;
+      index += 1;
+      continue;
+    }
+    if (arg === '--source') {
+      const value = argv[index + 1];
+      if (!value) throw new CliError('source_missing', '--source is required', 2);
+      args.source = value;
+      index += 1;
+      continue;
+    }
+    if (arg === '--url') {
+      const value = argv[index + 1];
+      if (!value) throw new CliError('url_missing', '--url is required', 2);
+      args.url = value;
+      index += 1;
+      continue;
+    }
+    if (arg === '--user') {
+      const value = argv[index + 1];
+      if (!value) throw new CliError('user_missing', '--user is required', 2);
+      args.user = value;
+      index += 1;
+      continue;
+    }
+    if (arg === '--password') {
+      const value = argv[index + 1];
+      if (!value) throw new CliError('password_missing', '--password is required', 2);
+      args.password = value;
+      index += 1;
+      continue;
+    }
+    if (arg === '--connect-timeout-ms') {
+      args.connectTimeoutMs = parsePositiveInteger(argv[index + 1], '--connect-timeout-ms');
+      index += 1;
+      continue;
+    }
+    if (arg === '--query-timeout-ms') {
+      args.queryTimeoutMs = parsePositiveInteger(argv[index + 1], '--query-timeout-ms');
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      throw new CliError('unsupported_argument', `unsupported argument: ${arg}`, 2);
+    }
+    args.queryArgs = argv.slice(index);
+    break;
+  }
+
+  if (args.profile && args.source) throw new CliError('target_conflict', '--profile and --source are mutually exclusive', 2);
+  if (!args.profile && !args.source) throw new CliError('target_missing', '--profile or --source is required', 2);
+  return { help: false, args };
+}
+
+function resolveQuery(queryArgs) {
+  if (queryArgs.length) return queryArgs.join(' ').trim();
+  return fs.readFileSync(0, 'utf8').trim();
+}
+
+function stripTrailingSemicolon(sql) {
+  const trimmed = sql.trim();
+  if (!trimmed.endsWith(';')) return trimmed;
+  return trimmed.slice(0, -1).trim();
+}
+
+function hasMultipleStatements(sql) {
+  const withoutTrailing = stripTrailingSemicolon(sql);
+  return withoutTrailing.includes(';');
+}
+
+function checkReadonlySql(sql) {
+  if (!sql.trim()) throw new CliError('query_missing', 'SQL is empty', 2);
+  if (hasMultipleStatements(sql)) {
+    throw new CliError('multi_statement_unsupported', 'Only one SQL statement is allowed', 2);
+  }
+  const normalized = stripTrailingSemicolon(sql).toLowerCase();
+  if (!READONLY_SQL_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
+    throw new CliError('readonly_only', 'Only read-only SQL is allowed', 2);
+  }
+}
+
+function loadConfig(configFile) {
+  if (!fs.existsSync(configFile)) {
+    throw new CliError('config_missing', `Missing offline data query config: ${configFile}`, 1);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  } catch (error) {
+    throw new CliError('invalid_config', `Invalid offline data query config JSON: ${configFile}`, 2);
+  }
+  if (!parsed || typeof parsed !== 'object' || !parsed.profiles || typeof parsed.profiles !== 'object') {
+    throw new CliError('invalid_config', 'offline-data-query config must contain profiles object', 2);
+  }
+  return parsed;
+}
+
+function loadProfile(profileName, configFile) {
+  const config = loadConfig(configFile);
+  const profile = config.profiles[profileName];
+  if (!profile || typeof profile !== 'object') {
+    throw new CliError('profile_not_found', `Profile not found: ${profileName}`, 1);
+  }
+  validateProfile(profileName, profile);
+  return profile;
+}
+
+function loadSourceProfile(args) {
+  const profile = {
+    source: args.source,
+    url: args.url,
+  };
+  if (args.user) profile.user = args.user;
+  if (args.password) profile.password = args.password;
+  validateProfile('command-line source', profile);
+  return profile;
+}
+
+function ensureNoUrlUserinfoPassword(profileName, rawUrl) {
+  const value = String(rawUrl || '').startsWith('jdbc:')
+    ? String(rawUrl || '').slice(5)
+    : String(rawUrl || '');
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#@]+)@/i.exec(value);
+  if (!match) return;
+  if (!match[1].includes(':')) return;
+  throw new CliError(
+    'url_userinfo_forbidden',
+    `Profile ${profileName} URL must not contain userinfo password; pass --user and sealed --password separately`,
+    2,
+  );
+}
+
+function requireSealedPassword(profileName, password) {
+  if (password === undefined || password === null || password === '') return;
+  if (!isSealedCredential(password)) {
+    throw new CliError(
+      'plaintext_password_forbidden',
+      `Profile ${profileName} password must be sealed; use scripts/skillctl credential seal`,
+      2,
+    );
+  }
+}
+
+function validateProfile(profileName, profile) {
+  for (const key of ['source', 'url']) {
+    if (typeof profile[key] !== 'string' || !profile[key].trim()) {
+      throw new CliError('invalid_config', `Profile ${profileName} missing required field: ${key}`, 2);
+    }
+  }
+  ensureNoUrlUserinfoPassword(profileName, profile.url);
+  if (!['mysql', 'redis', 'mongo'].includes(profile.source)) {
+    throw new CliError('unsupported_source', `offline-data-query supports mysql, redis, mongo; got ${profile.source}`, 2);
+  }
+  if (profile.source === 'mysql') {
+    for (const key of ['user', 'password']) {
+      if (typeof profile[key] !== 'string' || !profile[key].trim()) {
+        throw new CliError('invalid_config', `Profile ${profileName} missing required field: ${key}`, 2);
+      }
+    }
+    requireSealedPassword(profileName, profile.password);
+  }
+  if (profile.source === 'redis' && profile.password !== undefined && typeof profile.password !== 'string') {
+    throw new CliError('invalid_config', `Profile ${profileName} field password must be a string`, 2);
+  }
+  if (profile.source === 'redis') {
+    requireSealedPassword(profileName, profile.password);
+  }
+  if (profile.source === 'mongo') {
+    if (profile.user !== undefined && typeof profile.user !== 'string') {
+      throw new CliError('invalid_config', `Profile ${profileName} field user must be a string`, 2);
+    }
+    if (profile.password !== undefined && typeof profile.password !== 'string') {
+      throw new CliError('invalid_config', `Profile ${profileName} field password must be a string`, 2);
+    }
+    if (profile.user && !profile.password) {
+      throw new CliError('invalid_config', `Profile ${profileName} missing required field: password`, 2);
+    }
+    requireSealedPassword(profileName, profile.password);
+  }
+}
+
+function parseMysqlUrl(rawUrl) {
+  const normalized = rawUrl.startsWith('jdbc:') ? rawUrl.slice(5) : rawUrl;
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch (error) {
+    throw new CliError('invalid_config', `Invalid MySQL URL: ${rawUrl}`, 2);
+  }
+  if (parsed.protocol !== 'mysql:') {
+    throw new CliError('invalid_config', `Unsupported MySQL URL: ${rawUrl}`, 2);
+  }
+  if (!parsed.hostname) {
+    throw new CliError('invalid_config', `Missing host in MySQL URL: ${rawUrl}`, 2);
+  }
+
+  return {
+    host: parsed.hostname,
+    port: parsed.port ? Number(parsed.port) : 3306,
+    database: parsed.pathname.replace(/^\//, ''),
+    query: parsed.searchParams,
+  };
+}
+
+function resolveMysqlOptions(profile, args) {
+  const mysqlUrl = parseMysqlUrl(profile.url);
+  const password = unsealCredential(profile.password);
+  const charset = mysqlUrl.query.get('characterEncoding') || mysqlUrl.query.get('charset') || 'utf8mb4';
+
+  return {
+    host: mysqlUrl.host,
+    port: mysqlUrl.port,
+    user: profile.user,
+    password,
+    database: mysqlUrl.database || undefined,
+    charset,
+    connectTimeout: args.connectTimeoutMs,
+    multipleStatements: false,
+    ssl: mysqlUrl.query.get('useSSL') === 'false' ? undefined : undefined,
+  };
+}
+
+function stringifyCell(value) {
+  if (value === null || value === undefined) return 'NULL';
+  if (Buffer.isBuffer(value)) return value.toString('utf8');
+  return String(value);
+}
+
+function formatRows(fields, rows) {
+  if (!fields || !fields.length) return '';
+  const lines = [
+    fields.map((field) => field.name).join('\t'),
+    ...rows.map((row) => fields.map((field) => stringifyCell(row[field.name])).join('\t')),
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
+async function loadMysqlDriver() {
+  try {
+    return require('mysql2/promise');
+  } catch (error) {
+    throw new CliError('driver_missing', 'mysql2 not installed; run scripts/skillctl setup --install', 1);
+  }
+}
+
+async function queryMysql(profile, args, sql) {
+  const mysql = await loadMysqlDriver();
+  const options = resolveMysqlOptions(profile, args);
+  let connection;
+  try {
+    connection = await mysql.createConnection(options);
+  } catch (error) {
+    throw new CliError('connect_failed', error.message || String(error), 1);
+  }
+
+  try {
+    let result;
+    try {
+      result = await connection.query({ sql: stripTrailingSemicolon(sql), timeout: args.queryTimeoutMs });
+    } catch (error) {
+      if (error && (error.code === 'PROTOCOL_SEQUENCE_TIMEOUT' || /timeout/i.test(error.message || ''))) {
+        throw new CliError('query_timeout', error.message || 'Query timed out', 1);
+      }
+      throw new CliError('query_failed', error.message || String(error), 1);
+    }
+    const [rows, fields] = result;
+    if (Array.isArray(rows)) return formatRows(fields, rows);
+    return '';
+  } finally {
+    await connection.end().catch(() => {});
+  }
+}
+
+function parseRedisCommand(query) {
+  const tokens = String(query || '').trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) throw new CliError('query_missing', 'Redis command is empty', 2);
+  return tokens;
+}
+
+function checkReadonlyRedisCommand(tokens) {
+  const command = String(tokens[0] || '').toUpperCase();
+  if (!READONLY_REDIS_COMMANDS.has(command)) {
+    throw new CliError('readonly_only', `Only read-only Redis commands are allowed; got ${command || 'empty'}`, 2);
+  }
+}
+
+async function loadRedisDriver() {
+  try {
+    return require('redis');
+  } catch (error) {
+    throw new CliError('driver_missing', 'redis not installed; run scripts/skillctl setup --install', 1);
+  }
+}
+
+function formatRedisResult(value) {
+  if (Array.isArray(value)) {
+    return `index\tvalue\n${value.map((item, index) => `${index}\t${stringifyCell(item)}`).join('\n')}\n`;
+  }
+  if (value && typeof value === 'object') {
+    return `key\tvalue\n${Object.entries(value).map(([key, item]) => `${key}\t${stringifyCell(item)}`).join('\n')}\n`;
+  }
+  return `value\n${stringifyCell(value)}\n`;
+}
+
+async function queryRedis(profile, args, query) {
+  const tokens = parseRedisCommand(query);
+  checkReadonlyRedisCommand(tokens);
+  const { createClient } = await loadRedisDriver();
+  const client = createClient({
+    url: profile.url,
+    password: profile.password ? unsealCredential(profile.password) : undefined,
+    RESP: 2,
+    socket: {
+      connectTimeout: args.connectTimeoutMs,
+      reconnectStrategy: false,
+    },
+  });
+  client.on('error', () => {});
+  try {
+    await client.connect();
+  } catch (error) {
+    throw new CliError('connect_failed', error.message || String(error), 1);
+  }
+  try {
+    const result = await client.sendCommand(tokens);
+    return formatRedisResult(result);
+  } catch (error) {
+    throw new CliError('query_failed', error.message || String(error), 1);
+  } finally {
+    if (client.isOpen) await client.quit().catch(() => client.destroy());
+    else client.destroy();
+  }
+}
+
+function parseMongoCommand(query) {
+  if (!String(query || '').trim()) throw new CliError('query_missing', 'Mongo query JSON is empty', 2);
+  let command;
+  try {
+    command = JSON.parse(query);
+  } catch (error) {
+    throw new CliError('invalid_query', 'Mongo query must be a JSON object', 2);
+  }
+  if (!command || typeof command !== 'object' || Array.isArray(command)) {
+    throw new CliError('invalid_query', 'Mongo query must be a JSON object', 2);
+  }
+  const op = String(command.op || '');
+  if (!READONLY_MONGO_OPS.has(op)) {
+    throw new CliError('readonly_only', `Only read-only Mongo operations are allowed; got ${op || 'empty'}`, 2);
+  }
+  if (op !== 'listCollections' && (typeof command.collection !== 'string' || !command.collection.trim())) {
+    throw new CliError('invalid_query', 'Mongo query requires collection for this op', 2);
+  }
+  return command;
+}
+
+function objectOrEmpty(value, name) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new CliError('invalid_query', `${name} must be an object`, 2);
+  }
+  return value;
+}
+
+function mongoLimit(value) {
+  if (value === undefined) return DEFAULT_MONGO_LIMIT;
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_MONGO_LIMIT) {
+    throw new CliError('invalid_query', `Mongo limit must be between 1 and ${MAX_MONGO_LIMIT}`, 2);
+  }
+  return limit;
+}
+
+function mongoDatabaseName(rawUrl, fallback) {
+  if (fallback) return fallback;
+  const withoutQuery = String(rawUrl).split('?')[0].split('#')[0];
+  const schemeMatch = /^[a-z][a-z0-9+.-]*:\/\/(.+)$/i.exec(withoutQuery);
+  if (!schemeMatch) return undefined;
+  const slash = schemeMatch[1].indexOf('/');
+  if (slash === -1) return undefined;
+  const db = schemeMatch[1].slice(slash + 1).split('/')[0];
+  return db ? decodeURIComponent(db) : undefined;
+}
+
+async function loadMongoDriver() {
+  try {
+    return require('mongodb');
+  } catch (error) {
+    throw new CliError('driver_missing', 'mongodb not installed; run scripts/skillctl setup --install', 1);
+  }
+}
+
+function formatMongoDocuments(documents) {
+  if (!documents.length) return '';
+  return `${documents.map((item) => JSON.stringify(item)).join('\n')}\n`;
+}
+
+async function queryMongo(profile, args, query) {
+  const command = parseMongoCommand(query);
+  const { MongoClient } = await loadMongoDriver();
+  const options = {
+    serverSelectionTimeoutMS: args.connectTimeoutMs,
+  };
+  if (profile.user) {
+    options.auth = {
+      username: profile.user,
+      password: unsealCredential(profile.password || ''),
+    };
+  }
+  const client = new MongoClient(profile.url, options);
+  try {
+    await client.connect();
+  } catch (error) {
+    throw new CliError('connect_failed', error.message || String(error), 1);
+  }
+
+  try {
+    const db = client.db(mongoDatabaseName(profile.url, profile.database));
+    if (command.op === 'listCollections') {
+      const collections = await db
+        .listCollections({}, { nameOnly: true })
+        .toArray();
+      return `name\n${collections.slice(0, mongoLimit(command.limit)).map((item) => stringifyCell(item.name)).join('\n')}\n`;
+    }
+
+    const collection = db.collection(command.collection);
+    const filter = objectOrEmpty(command.filter, 'filter');
+    if (command.op === 'countDocuments') {
+      const count = await collection.countDocuments(filter, { maxTimeMS: args.queryTimeoutMs });
+      return `count\n${count}\n`;
+    }
+    if (command.op === 'distinct') {
+      if (typeof command.field !== 'string' || !command.field.trim()) {
+        throw new CliError('invalid_query', 'Mongo distinct requires field', 2);
+      }
+      const values = await collection.distinct(command.field, filter, { maxTimeMS: args.queryTimeoutMs });
+      return formatRedisResult(values);
+    }
+    if (command.op === 'findOne') {
+      const document = await collection.findOne(filter, {
+        projection: objectOrEmpty(command.projection, 'projection'),
+        maxTimeMS: args.queryTimeoutMs,
+      });
+      return document ? `${JSON.stringify(document)}\n` : '';
+    }
+    const documents = await collection
+      .find(filter, {
+        projection: objectOrEmpty(command.projection, 'projection'),
+        maxTimeMS: args.queryTimeoutMs,
+      })
+      .limit(mongoLimit(command.limit))
+      .toArray();
+    return formatMongoDocuments(documents);
+  } catch (error) {
+    if (error instanceof CliError) throw error;
+    throw new CliError('query_failed', error.message || String(error), 1);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+async function run(argv) {
+  const parsed = parseArgs(argv);
+  if (parsed.help) {
+    printUsage();
+    return 0;
+  }
+
+  const { args } = parsed;
+  const sql = resolveQuery(args.queryArgs);
+  const profile = args.source
+    ? loadSourceProfile(args)
+    : loadProfile(args.profile, process.env.OFFLINE_DATA_QUERY_CONFIG_FILE || DEFAULT_CONFIG_FILE);
+  let output;
+  if (profile.source === 'mysql') {
+    checkReadonlySql(sql);
+    output = await queryMysql(profile, args, sql);
+  } else if (profile.source === 'redis') {
+    output = await queryRedis(profile, args, sql);
+  } else {
+    output = await queryMongo(profile, args, sql);
+  }
+  if (output) process.stdout.write(output);
+  return 0;
+}
+
+async function main(argv) {
+  try {
+    return await run(argv);
+  } catch (error) {
+    if (error instanceof CliError) {
+      process.stderr.write(`[${error.code}] ${error.message}\n`);
+      return error.exitCode;
+    }
+    process.stderr.write(`[execution_failed] ${error && error.message ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+if (require.main === module) {
+  main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
+}
+
+module.exports = {
+  checkReadonlySql,
+  formatRows,
+  loadSourceProfile,
+  loadProfile,
+  parseMongoCommand,
+  parseArgs,
+  parseMysqlUrl,
+  parseRedisCommand,
+  resolveMysqlOptions,
+  stripTrailingSemicolon,
+};

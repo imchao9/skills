@@ -1,0 +1,7 @@
+interface:
+  display_name: "Market Live Report Skill"
+  short_description: "Parse live reports, write DingTalk rows, schedule duty, and draft duty docs."
+  default_prompt: "Use $market-live-report-skill to parse fixed-format live-report text, write DingTalk table rows, create duty schedules, or generate daily live duty documents."
+
+policy:
+  allow_implicit_invocation: false

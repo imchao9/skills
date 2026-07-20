@@ -1,0 +1,47 @@
+{
+  "test": {
+    "eurekaServerUrl": "http://discovery:8vzc4kd69Mv4hitHQ4ibBfkx82L69N@test-discovery.center.codemao.cn",
+    "apolloDomain": "http://test-internal.service-config-center.codemao.cn:8080",
+    "apolloPortalUrl": "https://dev-config-center.codemao.cn",
+    "apolloPortalAuth": {
+      "username": "apollo",
+      "password": "sealed:v1:HumOHBORFCHHcit1:SAp_jl5FsCE8rFQomWwryQ:cwKmXt7g3lMCOd-46NeJ0w"
+    },
+    "adminLoginUrl": "https://test-internal-account.codemao.cn/login",
+    "adminAuthCheckUrl": "https://test-internal-account-api.codemao.cn/auth/info",
+    "adminRequiredCookies": [],
+    "customerLoginUrl": "https://test-shequ.codemao.cn",
+    "customerAuthCheckUrl": "https://test-api.codemao.cn/web/users/details",
+    "customerRequiredCookies": []
+  },
+  "staging": {
+    "eurekaServerUrl": "http://discovery:ij6KaphMJv6Y66Zi6ndC2BH8mTF849@staging-discovery.center.codemao.cn",
+    "apolloDomain": "http://staging-internal.service-config-center.codemao.cn:8080",
+    "apolloPortalUrl": "https://dev-config-center.codemao.cn",
+    "apolloPortalAuth": {
+      "username": "apollo",
+      "password": "sealed:v1:HumOHBORFCHHcit1:SAp_jl5FsCE8rFQomWwryQ:cwKmXt7g3lMCOd-46NeJ0w"
+    },
+    "adminLoginUrl": "https://staging-internal-account.codemao.cn/login",
+    "adminAuthCheckUrl": "https://staging-internal-account-api.codemao.cn/auth/info",
+    "adminRequiredCookies": [],
+    "customerLoginUrl": "https://staging-shequ.codemao.cn",
+    "customerAuthCheckUrl": "https://staging-api.codemao.cn/web/users/details",
+    "customerRequiredCookies": []
+  },
+  "press": {
+    "eurekaServerUrl": "",
+    "apolloDomain": "http://press-internal.service-config-center.codemao.cn:8080",
+    "apolloPortalUrl": "https://dev-config-center.codemao.cn",
+    "apolloPortalAuth": {
+      "username": "apollo",
+      "password": "sealed:v1:HumOHBORFCHHcit1:SAp_jl5FsCE8rFQomWwryQ:cwKmXt7g3lMCOd-46NeJ0w"
+    },
+    "adminLoginUrl": "https://press-internal-account.codemao.cn/login",
+    "adminAuthCheckUrl": "https://press-internal-account-api.codemao.cn/auth/info",
+    "adminRequiredCookies": [],
+    "customerLoginUrl": "https://press-shequ.codemao.cn",
+    "customerAuthCheckUrl": "https://press-api.codemao.cn/web/users/details",
+    "customerRequiredCookies": []
+  }
+}

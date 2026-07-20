@@ -1,0 +1,4 @@
+{
+  "node_id": "https://alidocs.dingtalk.com/i/nodes/YOUR_NODE_ID",
+  "note": "默认钉钉表格；未指定 --node-id 时使用。复制为 default-table-node.local.json 后填写真实 node URL。"
+}

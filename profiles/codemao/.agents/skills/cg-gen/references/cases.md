@@ -258,6 +258,105 @@ Expected:
 - Treat as incomplete output contract.
 - Block completion until checklist is present.
 
+## Plan Stage Cases
+
+### Case 62: Plan-Skipped for tiny scope (Pass, Non-Blocking)
+Input:
+- Implement Mode task modifies a single local mapping line with no DB/external call.
+- User asks to implement directly.
+Expected:
+- `Plan Status = Plan-Skipped`.
+- `Plan Skip Reason` is present.
+- Execution continues without plan-mapping hard block.
+
+### Case 63: Plan-Lite enabled mapping hard gate (Fail when incomplete)
+Input:
+- Implement Mode task touches API + service and selects `Plan-Lite`.
+- `方案映射表` misses one planned item.
+Expected:
+- `plan_mapping` is activated.
+- Completion is blocked due to incomplete mapping.
+
+### Case 64: Upgrade recommendation not adopted (Pass with risk note)
+Input:
+- Trigger Profile is `L2-Standard` with DB write changes.
+- User keeps `Plan-Skipped`.
+Expected:
+- Output includes non-blocking upgrade recommendation.
+- `Risk Notes` records skip rationale and residual risk.
+- Implementation is allowed to continue.
+
+### Case 65: Plan-Full with Display-Only (Pass)
+Input:
+- Task selects `Plan-Full`.
+- Persistence option = `Display-Only`.
+Expected:
+- Full plan is shown in conversation.
+- No repository plan artifact is written.
+- `Pre-check` records `Plan-Full Persistence = Display-Only`.
+
+### Case 66: Plan-Full with Display-And-Persist (Pass)
+Input:
+- Task selects `Plan-Full`.
+- Persistence option = `Display-And-Persist`.
+Expected:
+- Full plan is shown in conversation.
+- Plan artifact is persisted to `docs/plans/` using `{topic}-{yyyyMMdd-HHmm}-plan.md`.
+- `Validation` records persisted path and write status.
+
+### Case 67: Plan-Full without asking persistence choice (Fail)
+Input:
+- Task enters `Plan-Full`.
+- User did not pre-specify persistence option.
+- Assistant shows full plan but does not ask persistence choice.
+Expected:
+- Treat as interaction contract violation.
+- Must ask user to choose `Display-Only` or `Display-And-Persist` immediately after plan display.
+
+### Case 68: Plan-Full with colloquial \"落库\" input (Pass)
+Input:
+- Task enters `Plan-Full`.
+- User replies only: `落库` (or `存档`).
+Expected:
+- Map colloquial input to `Display-And-Persist`.
+- Persist document to `docs/plans/{topic}-{yyyyMMdd-HHmm}-plan.md`.
+- `Validation` includes `persisted -> <path>`.
+
+### Case 69: Topic fallback when not inferable (Pass)
+Input:
+- Task enters `Plan-Full` and chooses persistence.
+- Requirement topic cannot be inferred from prompt/context.
+Expected:
+- Use fallback topic `general-plan`.
+- Filename is `docs/plans/general-plan-{yyyyMMdd-HHmm}-plan.md`.
+
+### Case 70: Plan-Full with explicit choice in same turn (Pass)
+Input:
+- Task enters `Plan-Full`.
+- User already provides explicit choice (`Display-Only` or `Display-And-Persist`) in the same request.
+Expected:
+- Assistant reuses provided choice directly.
+- No extra persistence-choice question is required.
+
+### Case 71: Plan-Full with no explicit choice after display (Pass)
+Input:
+- Task enters `Plan-Full`.
+- User does not pre-specify persistence option.
+- Assistant has already shown the full plan.
+Expected:
+- Assistant asks persistence choice and waits for user selection.
+- Assistant does not auto-default to `Display-Only`.
+
+### Case 72: Plan-Full persist write failure result format (Pass)
+Input:
+- Task enters `Plan-Full`.
+- User selects `Display-And-Persist`.
+- Plan persistence write fails due to path or IO error.
+Expected:
+- `Validation` uses standardized result:
+  - `persist-failed -> <path> -> <reason>`
+- Failure reason is concise and actionable.
+
 ### Case 29: Hard checklist item failed with empty action (Fail)
 Input:
 - `Build & Compile` row is `FAIL`, but `Action` is empty.

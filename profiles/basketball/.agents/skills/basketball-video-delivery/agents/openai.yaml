@@ -1,0 +1,4 @@
+interface:
+  display_name: "篮球视频交付工作流"
+  short_description: "Download, edit, verify, and deliver basketball games"
+  default_prompt: "Use $basketball-video-delivery to download a Xiaoqiumi replay, produce pure-play, player, team, and game highlights, then upload verified deliverables to Baidu Netdisk."

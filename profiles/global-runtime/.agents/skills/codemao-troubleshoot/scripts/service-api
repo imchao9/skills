@@ -1,0 +1,1498 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { isSealedCredential, sealCredential, unsealCredential } = require('./skillctl');
+
+const SKILL_ROOT = path.resolve(__dirname, '..');
+const OUTPUT_DIR = path.join(SKILL_ROOT, 'output');
+const DEFAULT_ENV = 'test';
+const DEFAULT_TIMEOUT_SECONDS = 15;
+const DEFAULT_LOGIN_TIMEOUT_SECONDS = 180;
+const PLAYWRIGHT_OPEN_TIMEOUT_MS = 30000;
+const DEFAULT_LIST_PAGE = 1;
+const DEFAULT_LIST_PAGE_SIZE = 20;
+const MAX_LIST_PAGE_SIZE = 100;
+const DEFAULT_APOLLO_NAMESPACES = ['application', 'application-volatile'];
+const DEFAULT_APOLLO_QUERY_IP = '10.240.7.233';
+const OFFLINE_ENVS = new Set(['test', 'staging', 'press']);
+const DEFAULT_AUTH_STATE_FILE = path.join(OUTPUT_DIR, 'service-api-auth.json');
+
+const HELP = {
+  top: `usage: scripts/service-api [--config CONFIG] <command> ...
+
+Fetch Codemao offline config evidence, service discovery evidence, or service request evidence.
+
+commands:
+  discover            Query Eureka service discovery.
+  config              Query Apollo config and app registry.
+  auth                Capture request cookies with browser login.
+  request             Call a service API.
+
+options:
+  -h, --help          show this help message and exit
+  --config CONFIG     Override config file path. Defaults to SERVICE_API_CONFIG_FILE or scripts/service-api.config.json.
+`,
+  discover: `usage: scripts/service-api [--config CONFIG] discover <action> ...
+
+Query Eureka service discovery.
+
+actions:
+  list                List registered services with compact instance hints.
+  get                 Resolve one service and selected instance.
+  exists              Check whether a service exists in Eureka.
+
+options:
+  -h, --help          show this help message and exit
+`,
+  discoverList: `usage: scripts/service-api [--config CONFIG] discover list [--env ENV] [--keyword KEYWORD] [--page N] [--page-size N] [--raw]
+
+List registered services from Eureka.
+
+options:
+  --env ENV           test, staging, or press. Defaults to test.
+  --keyword KEYWORD   Filter service names case-insensitively.
+  --page N            Output page number. Defaults to 1.
+  --page-size N       Output page size. Defaults to 20, max 100.
+  --raw               Print the raw Eureka response.
+  -h, --help          show this help message and exit
+`,
+  discoverGet: `usage: scripts/service-api [--config CONFIG] discover get --service SERVICE [--env ENV] [--index N] [--raw]
+
+Resolve one service from Eureka.
+
+options:
+  --env ENV           test, staging, or press. Defaults to test.
+  --service SERVICE   Eureka app/service name.
+  --index N           Selected instance index. Defaults to 0.
+  --raw               Print compact result plus raw Eureka response.
+  -h, --help          show this help message and exit
+`,
+  discoverExists: `usage: scripts/service-api [--config CONFIG] discover exists --service SERVICE [--env ENV]
+
+Check whether one service exists in Eureka.
+
+options:
+  --env ENV           test, staging, or press. Defaults to test.
+  --service SERVICE   Eureka app/service name.
+  -h, --help          show this help message and exit
+`,
+  config: `usage: scripts/service-api [--config CONFIG] config <action> ...
+
+Query Apollo config and app registry.
+
+actions:
+  get                 Fetch Apollo namespace config.
+  list                List Apollo apps through Portal.
+  exists              Check whether an Apollo app exists through internal config.
+
+options:
+  -h, --help          show this help message and exit
+`,
+  configGet: `usage: scripts/service-api [--config CONFIG] config get --app APP [--env ENV] [--namespace NAMESPACE] [--ip IP] (--keys | --key KEY | --prefix PREFIX | --keyword KEYWORD | --all)
+
+Fetch Apollo namespace config.
+
+options:
+  --env ENV           test, staging, or press. Defaults to test.
+  --app APP           Apollo app id.
+  --namespace NAME    Namespace. Defaults to application and application-volatile.
+  --ip IP             Apollo query ip. Defaults to 10.240.7.233.
+  --keys              Print sorted config keys only.
+  --key KEY           Print one exact config key. Repeatable.
+  --prefix PREFIX     Print keys under one prefix. Repeatable.
+  --keyword KEYWORD   Print keys containing keyword case-insensitively.
+  --all               Print full namespace config. Use only when needed.
+  -h, --help          show this help message and exit
+`,
+  configList: `usage: scripts/service-api [--config CONFIG] config list [--env ENV] [--app-id APPID] [--keyword KEYWORD] [--page N] [--page-size N] [--raw]
+
+List Apollo apps through Portal. Empty --app-id asks Portal for its default page.
+
+options:
+  --env ENV           test, staging, or press. Defaults to test.
+  --app-id APPID      Pass a specific appIds value to Portal.
+  --keyword KEYWORD   Filter app id/name locally.
+  --page N            Output page number. Defaults to 1.
+  --page-size N       Output page size. Defaults to 20, max 100.
+  --raw               Print the raw Portal response.
+  -h, --help          show this help message and exit
+`,
+  configExists: `usage: scripts/service-api [--config CONFIG] config exists --app APP [--env ENV]
+
+Check whether an Apollo app exists through the internal config endpoint.
+
+options:
+  --env ENV           test, staging, or press. Defaults to test.
+  --app APP           Apollo app id.
+  --namespace NAME    Namespace used for the existence check. Defaults to application.
+  --ip IP             Apollo query ip. Defaults to 10.240.7.233.
+  -h, --help          show this help message and exit
+`,
+  request: `usage: scripts/service-api [--config CONFIG] request [--env ENV] (--service SERVICE | --url URL) [options]
+
+Call a service API.
+
+options:
+  --env ENV           test, staging, or press. Used only with --service or --auth admin/customer. Defaults to test when needed.
+  --service SERVICE   Resolve target URL through Eureka.
+  --url URL           Call an explicit URL.
+  --path PATH         Path appended to selected service home URL.
+  --index N           Selected Eureka instance index. Defaults to 0.
+  --method METHOD     HTTP method. Defaults to GET.
+  --auth MODE         none, admin, customer, or custom. Defaults to none.
+  --json-body JSON    JSON request body.
+  --header "K: V"     Add request header. Repeatable.
+  --query "K=V"       Add query parameter. Repeatable.
+  --timeout SECONDS   Request timeout. Defaults to 15.
+  --raw               Print request diagnostics and response headers.
+  -h, --help          show this help message and exit
+`,
+  auth: `usage: scripts/service-api [--config CONFIG] auth <type> ...
+
+Open Chrome, wait for manual login, listen for the auth-check URL, and write cookies into config.
+
+types:
+  admin               Capture admin account cookies for an environment.
+  customer            Capture customer account cookies for an environment.
+  custom              Capture custom cookies by auth-check origin.
+
+options:
+  -h, --help          show this help message and exit
+`,
+  authAdmin: `usage: scripts/service-api [--config CONFIG] auth admin [--env ENV] [--required-cookie NAME] [--login-timeout SECONDS]
+
+Capture admin account cookies for service-api request --auth admin.
+
+options:
+  --env ENV                    test, staging, or press. Defaults to test.
+  --required-cookie NAME       Required cookie name. Repeatable. Overrides config required cookies.
+  --login-timeout SECONDS      Login wait timeout. Defaults to 180.
+  -h, --help                   show this help message and exit
+`,
+  authCustomer: `usage: scripts/service-api [--config CONFIG] auth customer [--env ENV] [--required-cookie NAME] [--login-timeout SECONDS]
+
+Capture customer account cookies for service-api request --auth customer.
+
+options:
+  --env ENV                    test, staging, or press. Defaults to test.
+  --required-cookie NAME       Required cookie name. Repeatable. Overrides config required cookies.
+  --login-timeout SECONDS      Login wait timeout. Defaults to 180.
+  -h, --help                   show this help message and exit
+`,
+  authCustom: `usage: scripts/service-api [--config CONFIG] auth custom --login-url URL --auth-check-url URL [--required-cookie NAME] [--login-timeout SECONDS]
+
+Capture custom cookies for service-api request --auth custom.
+
+options:
+  --login-url URL              URL opened in Chrome for manual login.
+  --auth-check-url URL         URL that must naturally return success after login.
+  --required-cookie NAME       Required cookie name. Repeatable.
+  --login-timeout SECONDS      Login wait timeout. Defaults to 180.
+  -h, --help                   show this help message and exit
+`,
+};
+
+class CliError extends Error {
+  constructor(message, exitCode = 1) {
+    super(message);
+    this.exitCode = exitCode;
+  }
+}
+
+function printHelp(name, stream = process.stdout) {
+  const text = HELP[name] || HELP.top;
+  stream.write(text.endsWith('\n') ? text : `${text}\n`);
+}
+
+function wantsHelp(argv) {
+  return argv.includes('-h') || argv.includes('--help');
+}
+
+function takeValue(argv, index, name) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new CliError(`argument_missing: ${name}`, 2);
+  }
+  return value;
+}
+
+function parseOptions(argv, schema) {
+  const result = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const option = schema[arg];
+    if (!option) throw new CliError(`unknown_argument: ${arg}`, 2);
+    if (option.type === 'boolean') {
+      result[option.name] = true;
+      continue;
+    }
+    const value = takeValue(argv, index, arg);
+    index += 1;
+    if (option.type === 'append') {
+      const current = result[option.name] || [];
+      current.push(value);
+      result[option.name] = current;
+    } else if (option.type === 'number') {
+      const numberValue = Number(value);
+      if (!Number.isInteger(numberValue)) throw new CliError(`argument_invalid_number: ${arg}`, 2);
+      result[option.name] = numberValue;
+    } else {
+      result[option.name] = value;
+    }
+  }
+  return result;
+}
+
+function parseGlobalArgs(argv) {
+  const globalArgs = {};
+  const remaining = [...argv];
+  while (remaining[0] === '--config') {
+    globalArgs.config = takeValue(remaining, 0, '--config');
+    remaining.splice(0, 2);
+  }
+  return { globalArgs, remaining };
+}
+
+function parseArgs(argv) {
+  if (argv.length === 0 || argv[0] === '-h' || argv[0] === '--help') {
+    return { help: 'top' };
+  }
+
+  const { globalArgs, remaining } = parseGlobalArgs(argv);
+  if (remaining.length === 0 || remaining[0] === '-h' || remaining[0] === '--help') {
+    return { help: 'top', config: globalArgs.config };
+  }
+
+  const command = remaining.shift();
+  if (!['discover', 'config', 'auth', 'request'].includes(command)) {
+    throw new CliError(`unknown_command: ${command || ''}`.trim(), 2);
+  }
+
+  if (command === 'auth') {
+    return parseAuthArgs(globalArgs.config, remaining);
+  }
+
+  if (command === 'request') {
+    if (wantsHelp(remaining)) return { help: 'request', config: globalArgs.config };
+    const parsed = parseOptions(remaining, {
+      '--env': { name: 'env', type: 'string' },
+      '--service': { name: 'service', type: 'string' },
+      '--url': { name: 'url', type: 'string' },
+      '--path': { name: 'path', type: 'string' },
+      '--index': { name: 'index', type: 'number' },
+      '--method': { name: 'method', type: 'string' },
+      '--auth': { name: 'auth', type: 'string' },
+      '--json-body': { name: 'jsonBody', type: 'string' },
+      '--header': { name: 'header', type: 'append' },
+      '--query': { name: 'query', type: 'append' },
+      '--timeout': { name: 'timeout', type: 'number' },
+      '--raw': { name: 'raw', type: 'boolean' },
+    });
+    const args = {
+      path: '',
+      index: 0,
+      method: 'GET',
+      auth: 'none',
+      timeout: DEFAULT_TIMEOUT_SECONDS,
+      header: [],
+      query: [],
+      ...parsed,
+    };
+    if (!['none', 'admin', 'customer', 'custom'].includes(args.auth)) {
+      throw new CliError(`auth_mode_invalid: ${args.auth}`, 2);
+    }
+    validateRequestArgs(args, parsed);
+    return { command, config: globalArgs.config, ...args };
+  }
+
+  if (remaining.length === 0 || remaining[0] === '-h' || remaining[0] === '--help') {
+    return { help: command, config: globalArgs.config };
+  }
+
+  const action = remaining.shift();
+  if (command === 'discover') return parseDiscoverArgs(globalArgs.config, action, remaining);
+  return parseConfigArgs(globalArgs.config, action, remaining);
+}
+
+function parseDiscoverArgs(configPath, action, remaining) {
+  if (!['list', 'get', 'exists'].includes(action)) {
+    throw new CliError(`unknown_action: discover ${action || ''}`.trim(), 2);
+  }
+  const helpMap = { list: 'discoverList', get: 'discoverGet', exists: 'discoverExists' };
+  if (wantsHelp(remaining)) return { help: helpMap[action], config: configPath };
+
+  const schemas = {
+    list: {
+      '--env': { name: 'env', type: 'string' },
+      '--keyword': { name: 'keyword', type: 'string' },
+      '--page': { name: 'page', type: 'number' },
+      '--page-size': { name: 'pageSize', type: 'number' },
+      '--raw': { name: 'raw', type: 'boolean' },
+    },
+    get: {
+      '--env': { name: 'env', type: 'string' },
+      '--service': { name: 'service', type: 'string' },
+      '--index': { name: 'index', type: 'number' },
+      '--raw': { name: 'raw', type: 'boolean' },
+    },
+    exists: {
+      '--env': { name: 'env', type: 'string' },
+      '--service': { name: 'service', type: 'string' },
+    },
+  };
+  const args = { env: DEFAULT_ENV, index: 0, ...parseOptions(remaining, schemas[action]) };
+  if (action === 'list') validateListPagination(args);
+  if ((action === 'get' || action === 'exists') && !args.service) {
+    throw new CliError('argument_missing: --service', 2);
+  }
+  if (action === 'list') {
+    delete args.index;
+  }
+  validateOfflineEnv(args.env, `discover ${action}`);
+  return { command: 'discover', action, config: configPath, ...args };
+}
+
+function parseAuthArgs(configPath, remaining) {
+  if (remaining.length === 0 || remaining[0] === '-h' || remaining[0] === '--help') {
+    return { help: 'auth', config: configPath };
+  }
+  const type = remaining.shift();
+  if (!['admin', 'customer', 'custom'].includes(type)) {
+    throw new CliError(`unknown_action: auth ${type || ''}`.trim(), 2);
+  }
+  const helpMap = { admin: 'authAdmin', customer: 'authCustomer', custom: 'authCustom' };
+  if (wantsHelp(remaining)) return { help: helpMap[type], config: configPath };
+
+  const shared = {
+    '--required-cookie': { name: 'requiredCookie', type: 'append' },
+    '--login-timeout': { name: 'loginTimeout', type: 'number' },
+  };
+  const schemas = {
+    admin: {
+      '--env': { name: 'env', type: 'string' },
+      ...shared,
+    },
+    customer: {
+      '--env': { name: 'env', type: 'string' },
+      ...shared,
+    },
+    custom: {
+      '--login-url': { name: 'loginUrl', type: 'string' },
+      '--auth-check-url': { name: 'authCheckUrl', type: 'string' },
+      ...shared,
+    },
+  };
+  const args = {
+    env: type === 'custom' ? undefined : DEFAULT_ENV,
+    loginTimeout: DEFAULT_LOGIN_TIMEOUT_SECONDS,
+    requiredCookie: [],
+    ...parseOptions(remaining, schemas[type]),
+  };
+  if (args.loginTimeout < 1) throw new CliError('argument_invalid_range: --login-timeout must be >= 1', 2);
+  if (type === 'custom') {
+    if (!args.loginUrl) throw new CliError('argument_missing: --login-url', 2);
+    if (!args.authCheckUrl) throw new CliError('argument_missing: --auth-check-url', 2);
+  } else {
+    validateOfflineEnv(args.env, `auth ${type}`);
+  }
+  return { command: 'auth', type, config: configPath, ...args };
+}
+
+function parseConfigArgs(configPath, action, remaining) {
+  if (!['get', 'list', 'exists'].includes(action)) {
+    throw new CliError(`unknown_action: config ${action || ''}`.trim(), 2);
+  }
+  const helpMap = { get: 'configGet', list: 'configList', exists: 'configExists' };
+  if (wantsHelp(remaining)) return { help: helpMap[action], config: configPath };
+
+  const schemas = {
+    get: {
+      '--env': { name: 'env', type: 'string' },
+      '--app': { name: 'app', type: 'string' },
+      '--namespace': { name: 'namespace', type: 'string' },
+      '--ip': { name: 'ip', type: 'string' },
+      '--keys': { name: 'keys', type: 'boolean' },
+      '--key': { name: 'key', type: 'append' },
+      '--prefix': { name: 'prefix', type: 'append' },
+      '--keyword': { name: 'keyword', type: 'string' },
+      '--all': { name: 'all', type: 'boolean' },
+    },
+    list: {
+      '--env': { name: 'env', type: 'string' },
+      '--app-id': { name: 'appId', type: 'string' },
+      '--keyword': { name: 'keyword', type: 'string' },
+      '--page': { name: 'page', type: 'number' },
+      '--page-size': { name: 'pageSize', type: 'number' },
+      '--raw': { name: 'raw', type: 'boolean' },
+    },
+    exists: {
+      '--env': { name: 'env', type: 'string' },
+      '--app': { name: 'app', type: 'string' },
+      '--namespace': { name: 'namespace', type: 'string' },
+      '--ip': { name: 'ip', type: 'string' },
+    },
+  };
+  const args = { env: DEFAULT_ENV, ...parseOptions(remaining, schemas[action]) };
+  if (action === 'list') validateListPagination(args);
+  if ((action === 'get' || action === 'exists') && !args.app) {
+    throw new CliError('argument_missing: --app', 2);
+  }
+  validateOfflineEnv(args.env, `config ${action}`);
+  if (action === 'get') validateConfigGetOutputMode(args);
+  return { command: 'config', action, config: configPath, ...args };
+}
+
+function validateConfigGetOutputMode(args) {
+  const modeCount = [
+    args.keys,
+    args.key && args.key.length > 0,
+    args.prefix && args.prefix.length > 0,
+    args.keyword !== undefined,
+    args.all,
+  ].filter(Boolean).length;
+  if (modeCount === 0) {
+    throw new CliError('config_filter_required: use --keys, --key, --prefix, --keyword, or explicit --all', 2);
+  }
+}
+
+function validateOfflineEnv(env, scope) {
+  if (!OFFLINE_ENVS.has(env)) {
+    throw new CliError(`unsupported_env: service-api ${scope} supports only test, staging, press; got ${env}`, 2);
+  }
+}
+
+function validateRequestArgs(args, parsed) {
+  if (!!args.service === !!args.url) {
+    throw new CliError('request_target_invalid: provide exactly one of --service or --url', 2);
+  }
+  if (args.url && parsed.path !== undefined) {
+    throw new CliError('argument_conflict: --path requires --service', 2);
+  }
+  if (args.url && parsed.index !== undefined) {
+    throw new CliError('argument_conflict: --index requires --service', 2);
+  }
+
+  const needsEnv = Boolean(args.service) || args.auth === 'admin' || args.auth === 'customer';
+  if (needsEnv) {
+    args.env = args.env || DEFAULT_ENV;
+    validateOfflineEnv(args.env, 'request');
+    return;
+  }
+  if (parsed.env !== undefined) {
+    throw new CliError('argument_conflict: --env applies only with --service or --auth admin/customer', 2);
+  }
+}
+
+function validateListPagination(args) {
+  const page = args.page === undefined ? DEFAULT_LIST_PAGE : args.page;
+  const pageSize = args.pageSize === undefined ? DEFAULT_LIST_PAGE_SIZE : args.pageSize;
+  if (page < 1) throw new CliError(`argument_invalid_range: --page must be >= 1`, 2);
+  if (pageSize < 1 || pageSize > MAX_LIST_PAGE_SIZE) {
+    throw new CliError(`argument_invalid_range: --page-size must be between 1 and ${MAX_LIST_PAGE_SIZE}`, 2);
+  }
+}
+
+function loadConfig(configPath) {
+  try {
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (error) {
+    if (error && error.code === 'ENOENT') throw new CliError(`config_missing: ${configPath}`);
+    throw new CliError(`config_invalid_json: ${error.message}`);
+  }
+}
+
+function getEnvConfig(config, env) {
+  const envConfig = config[env];
+  if (!envConfig || typeof envConfig !== 'object' || Array.isArray(envConfig)) {
+    throw new CliError(`env_missing: ${env}`);
+  }
+  return envConfig;
+}
+
+function requireConfigValue(envConfig, key, env) {
+  const value = envConfig[key];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new CliError(`config_value_missing: env=${env} key=${key}`);
+  }
+  return value.trim();
+}
+
+async function sendHttpRequest(method, url, headers = {}, body = undefined, timeout = DEFAULT_TIMEOUT_SECONDS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), Math.max(1, timeout) * 1000);
+  const requestHeaders = { ...headers };
+  const requestUrl = new URL(url);
+  if (requestUrl.username || requestUrl.password) {
+    const credentials = `${decodeURIComponent(requestUrl.username)}:${decodeURIComponent(requestUrl.password)}`;
+    if (!requestHeaders.Authorization && !requestHeaders.authorization) {
+      requestHeaders.Authorization = `Basic ${Buffer.from(credentials).toString('base64')}`;
+    }
+    requestUrl.username = '';
+    requestUrl.password = '';
+  }
+  try {
+    const response = await fetch(requestUrl.toString(), {
+      method: method.toUpperCase(),
+      headers: requestHeaders,
+      body,
+      signal: controller.signal,
+      redirect: 'manual',
+    });
+    const rawBody = await response.text();
+    return {
+      statusCode: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+      setCookieHeaders: getSetCookieHeaders(response.headers),
+      body: parseBody(rawBody),
+    };
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      throw new CliError(`request_failed: timeout after ${timeout}s`);
+    }
+    throw new CliError(`request_failed: ${error && error.message ? error.message : String(error)}`);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function getSetCookieHeaders(headers) {
+  if (typeof headers.getSetCookie === 'function') return headers.getSetCookie();
+  const value = headers.get('set-cookie');
+  return value ? [value] : [];
+}
+
+function parseBody(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function normalizeArray(value) {
+  if (Array.isArray(value)) return value.filter((item) => item && typeof item === 'object');
+  if (value && typeof value === 'object') return [value];
+  return [];
+}
+
+function normalizeInstances(instanceValue) {
+  return normalizeArray(instanceValue);
+}
+
+function normalizeEurekaAppName(service) {
+  return String(service || '').trim().toUpperCase();
+}
+
+async function queryEurekaService(envConfig, env, service) {
+  const eurekaServerUrl = requireConfigValue(envConfig, 'eurekaServerUrl', env);
+  const appName = encodeURIComponent(normalizeEurekaAppName(service));
+  const url = `${eurekaServerUrl.replace(/\/+$/, '')}/eureka/apps/${appName}`;
+  const response = await sendHttpRequest('GET', url, { accept: 'application/json' });
+  if (response.statusCode >= 400) {
+    throw new CliError(`eureka_query_failed: status=${response.statusCode} body=${JSON.stringify(response.body)}`);
+  }
+  if (!response.body || typeof response.body !== 'object' || Array.isArray(response.body)) {
+    throw new CliError('eureka_response_invalid: body is not JSON object');
+  }
+  return response;
+}
+
+async function queryEurekaServiceMaybe(envConfig, env, service) {
+  const eurekaServerUrl = requireConfigValue(envConfig, 'eurekaServerUrl', env);
+  const appName = encodeURIComponent(normalizeEurekaAppName(service));
+  const url = `${eurekaServerUrl.replace(/\/+$/, '')}/eureka/apps/${appName}`;
+  return sendHttpRequest('GET', url, { accept: 'application/json' });
+}
+
+async function queryEurekaApps(envConfig, env) {
+  const eurekaServerUrl = requireConfigValue(envConfig, 'eurekaServerUrl', env);
+  const url = `${eurekaServerUrl.replace(/\/+$/, '')}/eureka/apps`;
+  const response = await sendHttpRequest('GET', url, { accept: 'application/json' });
+  if (response.statusCode >= 400) {
+    throw new CliError(`eureka_apps_query_failed: status=${response.statusCode} body=${JSON.stringify(response.body)}`);
+  }
+  if (!response.body || typeof response.body !== 'object' || Array.isArray(response.body)) {
+    throw new CliError('eureka_response_invalid: body is not JSON object');
+  }
+  return response;
+}
+
+function parsePort(portValue) {
+  if (portValue && typeof portValue === 'object') return portValue.$ || portValue._ || portValue.port;
+  return portValue;
+}
+
+function paginateItems(items, pageValue, pageSizeValue) {
+  const page = pageValue === undefined ? DEFAULT_LIST_PAGE : pageValue;
+  const pageSize = pageSizeValue === undefined ? DEFAULT_LIST_PAGE_SIZE : pageSizeValue;
+  const totalCount = items.length;
+  const pageCount = Math.max(1, Math.ceil(totalCount / pageSize));
+  const offset = (page - 1) * pageSize;
+  return {
+    items: items.slice(offset, offset + pageSize),
+    meta: {
+      total: totalCount,
+      page,
+      page_size: pageSize,
+      next_page: page < pageCount ? page + 1 : null,
+    },
+  };
+}
+
+function compactInstance(instance, index) {
+  return {
+    index,
+    status: instance.status || instance.STATUS || '',
+    url: instance.homePageUrl || instance.homepageurl || '',
+    health_url: instance.healthCheckUrl || instance.healthcheckurl || '',
+    ip_addr: instance.ipAddr || instance.ipaddr || '',
+    port: parsePort(instance.port),
+  };
+}
+
+function buildEurekaServiceResult(env, service, eurekaResult, index) {
+  const application = eurekaResult.body.application;
+  if (!application || typeof application !== 'object') throw new CliError('eureka_response_invalid: application missing');
+  const instances = normalizeInstances(application.instance);
+  if (instances.length === 0) throw new CliError(`service_instance_missing: ${service}`);
+  if (index < 0 || index >= instances.length) {
+    throw new CliError(`instance_index_out_of_range: index=${index} total=${instances.length}`);
+  }
+  const compactInstances = instances.map(compactInstance);
+  const selected = compactInstances[index];
+  return {
+    service: application.name || application.NAME || service,
+    instance_count: compactInstances.length,
+    index,
+    status: selected.status,
+    url: selected.url,
+    health_url: selected.health_url,
+    selected,
+    instances: compactInstances,
+  };
+}
+
+function compactEurekaServiceResult(result) {
+  return {
+    instance_count: result.instance_count,
+    index: result.index,
+    status: result.status,
+    url: result.url,
+    health_url: result.health_url,
+  };
+}
+
+function extractApplications(eurekaBody) {
+  return normalizeArray(eurekaBody && eurekaBody.applications && eurekaBody.applications.application);
+}
+
+function compactApplication(application) {
+  const instances = normalizeInstances(application.instance);
+  const first = instances[0] ? compactInstance(instances[0], 0) : {};
+  return {
+    service: application.name || application.NAME || application.app || '',
+    instance_count: instances.length,
+    url: first.url || '',
+    status: first.status || '',
+  };
+}
+
+async function handleDiscover(args, config) {
+  const envConfig = getEnvConfig(config, args.env);
+  if (args.action === 'list') {
+    const response = await queryEurekaApps(envConfig, args.env);
+    if (args.raw) return { env: args.env, raw: response.body };
+    let services = extractApplications(response.body).map(compactApplication).filter((item) => item.service);
+    if (args.keyword) {
+      const keyword = args.keyword.toLowerCase();
+      services = services.filter((item) => item.service.toLowerCase().includes(keyword));
+    }
+    services.sort((left, right) => left.service.localeCompare(right.service));
+    const page = paginateItems(services, args.page, args.pageSize);
+    return { ...page.meta, services: page.items };
+  }
+  if (args.action === 'exists') {
+    const response = await queryEurekaServiceMaybe(envConfig, args.env, args.service);
+    if (response.statusCode === 404) {
+      return { exists: false };
+    }
+    if (response.statusCode >= 400) {
+      throw new CliError(`eureka_query_failed: status=${response.statusCode} body=${JSON.stringify(response.body)}`);
+    }
+    const result = buildEurekaServiceResult(args.env, args.service, response, 0);
+    return {
+      exists: true,
+      instance_count: result.instance_count,
+      url: result.url,
+    };
+  }
+  const response = await queryEurekaService(envConfig, args.env, args.service);
+  const result = buildEurekaServiceResult(args.env, args.service, response, args.index);
+  const compact = compactEurekaServiceResult(result);
+  if (args.raw) return { ...compact, instances: result.instances, raw: response.body };
+  return compact;
+}
+
+async function fetchApolloNamespace(envConfig, env, app, namespace, ip) {
+  const apolloDomain = requireConfigValue(envConfig, 'apolloDomain', env);
+  const url = new URL(`${apolloDomain.replace(/\/+$/, '')}/configs/${encodeURIComponent(app)}/default/${encodeURIComponent(namespace)}`);
+  url.searchParams.set('ip', ip);
+  const response = await sendHttpRequest('GET', url.toString(), { accept: '*/*' });
+  return {
+    namespace,
+    status_code: response.statusCode,
+    config: extractApolloConfig(response.body),
+    ok: response.statusCode < 400,
+  };
+}
+
+function isPasswordFieldName(key) {
+  return /(^|[._-])(password|passwd|pwd|pass)$/i.test(String(key || ''));
+}
+
+function sealUrlUserinfoPassword(value) {
+  const text = String(value || '');
+  const match = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#@]+)@(.*)$/i.exec(text);
+  if (!match) return text;
+
+  const [, scheme, userinfo, rest] = match;
+  const passwordSeparator = userinfo.lastIndexOf(':');
+  if (passwordSeparator === -1) return text;
+
+  const username = userinfo.slice(0, passwordSeparator);
+  const rawPassword = userinfo.slice(passwordSeparator + 1);
+  if (!rawPassword) return text;
+
+  let password;
+  try {
+    password = decodeURIComponent(rawPassword);
+  } catch {
+    password = rawPassword;
+  }
+  const sealed = isSealedCredential(password) ? password : sealCredential(password);
+  return `${scheme}${username}:${encodeURIComponent(sealed)}@${rest}`;
+}
+
+function sealPasswordFields(value, key = '') {
+  if (Array.isArray(value)) return value.map((item) => sealPasswordFields(item, key));
+  if (value && typeof value === 'object') {
+    const copy = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      if (childKey === 'apollo_hover_content') continue;
+      copy[childKey] = sealPasswordFields(childValue, childKey);
+    }
+    return copy;
+  }
+  if (typeof value === 'string' && value) {
+    const sealedUrl = sealUrlUserinfoPassword(value);
+    if (sealedUrl !== value) return sealedUrl;
+    if (isPasswordFieldName(key) && !isSealedCredential(value)) return sealCredential(value);
+  }
+  return value;
+}
+
+function extractApolloConfig(body) {
+  const configurations = body && typeof body === 'object' && !Array.isArray(body)
+    ? body.configurations
+    : {};
+  if (!configurations || typeof configurations !== 'object' || Array.isArray(configurations)) return {};
+  return sealPasswordFields(configurations);
+}
+
+function sortedConfigKeys(config) {
+  return Object.keys(config).sort((left, right) => left.localeCompare(right));
+}
+
+function filterConfig(config, args) {
+  if (args.all) return config;
+  if (args.keys) return sortedConfigKeys(config);
+
+  const selected = {};
+  const exactKeys = args.key || [];
+  for (const key of exactKeys) {
+    if (Object.prototype.hasOwnProperty.call(config, key)) selected[key] = config[key];
+  }
+
+  const prefixes = args.prefix || [];
+  for (const prefix of prefixes) {
+    for (const key of sortedConfigKeys(config)) {
+      if (key.startsWith(prefix)) selected[key] = config[key];
+    }
+  }
+
+  if (args.keyword !== undefined) {
+    const keyword = String(args.keyword).toLowerCase();
+    for (const key of sortedConfigKeys(config)) {
+      if (key.toLowerCase().includes(keyword)) selected[key] = config[key];
+    }
+  }
+  return selected;
+}
+
+async function handleConfigGet(args, config) {
+  const envConfig = getEnvConfig(config, args.env);
+  const ip = args.ip || DEFAULT_APOLLO_QUERY_IP;
+  const namespaces = args.namespace ? [args.namespace] : DEFAULT_APOLLO_NAMESPACES;
+  const output = {};
+  for (const namespace of namespaces) {
+    const result = await fetchApolloNamespace(envConfig, args.env, args.app, namespace, ip);
+    if (!result.ok) {
+      throw new CliError(`[apollo_config_failed] namespace=${namespace} status=${result.status_code}`);
+    }
+    output[namespace] = filterConfig(result.config, args);
+  }
+  return output;
+}
+
+function getApolloPortalConfig(envConfig, env) {
+  const portalUrl = requireConfigValue(envConfig, 'apolloPortalUrl', env);
+  const auth = envConfig.apolloPortalAuth;
+  if (!auth || typeof auth !== 'object') throw new CliError(`config_value_missing: env=${env} key=apolloPortalAuth`);
+  if (!auth.username || !auth.password) throw new CliError(`config_value_missing: env=${env} key=apolloPortalAuth.username/password`);
+  return {
+    portalUrl: portalUrl.replace(/\/+$/, ''),
+    username: String(auth.username),
+    password: unsealCredential(auth.password),
+  };
+}
+
+function cookieHeaderFromSetCookie(setCookieHeaders) {
+  return setCookieHeaders
+    .map((item) => String(item).split(';')[0].trim())
+    .filter(Boolean)
+    .join('; ');
+}
+
+async function loginApolloPortal(envConfig, env) {
+  const { portalUrl, username, password } = getApolloPortalConfig(envConfig, env);
+  const body = new URLSearchParams({
+    username,
+    password,
+    'login-submit': '登录',
+  }).toString();
+  const response = await sendHttpRequest('POST', `${portalUrl}/signin`, {
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'cache-control': 'no-cache',
+    origin: portalUrl,
+    pragma: 'no-cache',
+    referer: `${portalUrl}/signin`,
+    'upgrade-insecure-requests': '1',
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+    'content-type': 'application/x-www-form-urlencoded',
+  }, body);
+  const cookie = cookieHeaderFromSetCookie(response.setCookieHeaders);
+  if (response.statusCode >= 400 || !cookie) {
+    throw new CliError(`apollo_portal_login_failed: status=${response.statusCode}`);
+  }
+  return { portalUrl, cookie };
+}
+
+async function fetchApolloPortalApps(envConfig, env, appIds = '') {
+  const { portalUrl, cookie } = await loginApolloPortal(envConfig, env);
+  const url = new URL(`${portalUrl}/apps`);
+  url.searchParams.set('appIds', appIds || '');
+  const response = await sendHttpRequest('GET', url.toString(), {
+    accept: 'application/json, text/plain, */*',
+    pragma: 'no-cache',
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+    Cookie: cookie,
+  });
+  if (response.statusCode >= 400) {
+    throw new CliError(`apollo_portal_apps_failed: status=${response.statusCode} body=${JSON.stringify(response.body)}`);
+  }
+  if (!response.body || typeof response.body !== 'object') {
+    const contentType = response.headers['content-type'] || '';
+    const bodyText = String(response.body || '').slice(0, 200);
+    if (/html/i.test(contentType) || /<html|signin|login/i.test(bodyText)) {
+      throw new CliError(`apollo_portal_auth_invalid: /apps returned non-JSON page; login cookie may be invalid`);
+    }
+    throw new CliError(`apollo_portal_apps_invalid: /apps response is not JSON`);
+  }
+  return response;
+}
+
+function extractApolloApps(body) {
+  if (Array.isArray(body)) return body.filter((item) => item && typeof item === 'object');
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body.content)) return body.content;
+  if (Array.isArray(body.data)) return body.data;
+  if (body.data && Array.isArray(body.data.content)) return body.data.content;
+  if (body.page && Array.isArray(body.page.content)) return body.page.content;
+  return [];
+}
+
+function compactApolloApp(app) {
+  return {
+    app_id: app.appId || app.appid || app.id || '',
+    name: app.name || app.appName || '',
+    org_name: app.orgName || app.org_name || '',
+    owner_name: app.ownerName || app.owner_name || '',
+  };
+}
+
+async function handleConfigList(args, config) {
+  const envConfig = getEnvConfig(config, args.env);
+  const response = await fetchApolloPortalApps(envConfig, args.env, args.appId || '');
+  if (args.raw) return { raw: response.body };
+  let apps = extractApolloApps(response.body).map(compactApolloApp).filter((app) => app.app_id || app.name);
+  if (args.keyword) {
+    const keyword = args.keyword.toLowerCase();
+    apps = apps.filter((app) => `${app.app_id} ${app.name}`.toLowerCase().includes(keyword));
+  }
+  const page = paginateItems(apps, args.page, args.pageSize);
+  return { ...page.meta, apps: page.items };
+}
+
+async function handleConfigExists(args, config) {
+  const envConfig = getEnvConfig(config, args.env);
+  const namespace = args.namespace || 'application';
+  const ip = args.ip || DEFAULT_APOLLO_QUERY_IP;
+  const response = await fetchApolloNamespace(envConfig, args.env, args.app, namespace, ip);
+  if (response.status_code >= 400 && response.status_code !== 404) {
+    throw new CliError(`apollo_exists_failed: status=${response.status_code} body=${JSON.stringify(response.body)}`);
+  }
+  return {
+    env: args.env,
+    app: args.app,
+    namespace,
+    exists: response.status_code < 400,
+    status_code: response.status_code,
+  };
+}
+
+async function handleConfig(args, config) {
+  if (args.action === 'get') return handleConfigGet(args, config);
+  if (args.action === 'list') return handleConfigList(args, config);
+  return handleConfigExists(args, config);
+}
+
+async function resolvePlaywrightModulePath() {
+  try {
+    return path.dirname(require.resolve('playwright/package.json'));
+  } catch {
+  }
+  const root = path.join(os.homedir(), '.npm', '_npx');
+  const entries = await fsp.readdir(root, { withFileTypes: true }).catch(() => []);
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const packagePath = path.join(root, entry.name, 'node_modules', 'playwright', 'package.json');
+    try {
+      const stat = await fsp.stat(packagePath);
+      candidates.push({ packagePath, mtimeMs: stat.mtimeMs });
+    } catch {
+    }
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (!candidates.length) {
+    throw new CliError('playwright_missing: Playwright library package not found. Run scripts/skillctl setup --install before running service-api auth.');
+  }
+  return path.dirname(candidates[0].packagePath);
+}
+
+function installBrowserAuthCloseHandlers(context, settleError) {
+  let pageCount = 0;
+
+  function cancelAuth() {
+    settleError(new Error('登录已取消或浏览器已关闭，auth 已停止。'));
+  }
+
+  function markPage(page) {
+    if (!page || typeof page.once !== 'function') return;
+    if (typeof page.isClosed === 'function' && page.isClosed()) return;
+    pageCount += 1;
+    page.once('close', () => {
+      pageCount = Math.max(0, pageCount - 1);
+      if (pageCount === 0) cancelAuth();
+    });
+  }
+
+  context.once('close', cancelAuth);
+  const browser = context.browser();
+  if (browser) browser.once('disconnected', cancelAuth);
+  for (const page of context.pages()) markPage(page);
+  context.on('page', markPage);
+
+  return {
+    markPage,
+    getPageCount: () => pageCount,
+  };
+}
+
+function cleanupTempProfileDetached(tempRoot) {
+  if (!tempRoot) return;
+  const child = spawn(process.execPath, [
+    '-e',
+    [
+      "const fs = require('node:fs/promises');",
+      "const os = require('node:os');",
+      "const path = require('node:path');",
+      '',
+      '(async () => {',
+      "  const dir = path.resolve(process.argv[1] || '');",
+      '  const tmp = path.resolve(os.tmpdir());',
+      '  const basename = path.basename(dir);',
+      "  if (!dir.startsWith(tmp + path.sep) || !/^codemao-troubleshoot-service-api-auth-login-[^/]+$/.test(basename)) return;",
+      '  const delays = [500, 1000, 2000, 4000, 8000, 8000];',
+      '  for (const delay of delays) {',
+      '    await new Promise((resolve) => setTimeout(resolve, delay));',
+      '    try {',
+      '      await fs.rm(dir, { recursive: true });',
+      '      return;',
+      '    } catch {',
+      '    }',
+      '  }',
+      '})().catch(() => {});',
+    ].join('\n'),
+    tempRoot,
+  ], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+}
+
+function closeAndCleanupDetached(context, tempRoot) {
+  if (context) context.close().catch(() => {});
+  cleanupTempProfileDetached(tempRoot);
+}
+
+async function writeCompactJson(value) {
+  await new Promise((resolve) => {
+    process.stdout.write(`${JSON.stringify(value)}\n`, resolve);
+  });
+}
+
+function hostFromUrl(urlValue) {
+  return new URL(urlValue).hostname;
+}
+
+function originFromUrl(urlValue) {
+  return new URL(urlValue).origin;
+}
+
+function normalizeUrlNoHash(urlValue) {
+  const url = new URL(urlValue);
+  url.hash = '';
+  return url.toString();
+}
+
+function isCodemaoCookie(cookie) {
+  const domain = String(cookie.domain || '').replace(/^\./, '');
+  return domain === 'codemao.cn' || domain.endsWith('.codemao.cn');
+}
+
+function isAuthCheckCookie(cookie, authCheckUrl) {
+  const domain = String(cookie.domain || '').replace(/^\./, '');
+  return domain === hostFromUrl(authCheckUrl) || isCodemaoCookie(cookie);
+}
+
+function cookieNames(cookies) {
+  return cookies.map((cookie) => String(cookie.name || '')).filter(Boolean);
+}
+
+function missingAuthCookies(cookies, requiredCookies) {
+  const names = new Set(cookieNames(cookies));
+  if (requiredCookies && requiredCookies.length) {
+    return requiredCookies.filter((name) => !names.has(name));
+  }
+  if (cookies.length === 0) return ['at least one cookie for auth-check URL'];
+  return [];
+}
+
+function hasRequiredAuthCookies(cookies, requiredCookies) {
+  return missingAuthCookies(cookies, requiredCookies).length === 0;
+}
+
+function buildCookieHeader(cookies) {
+  return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+}
+
+function looksLikeServiceAuthSuccess(response, args) {
+  return response.ok() && normalizeUrlNoHash(response.url()) === normalizeUrlNoHash(args.authCheckUrl);
+}
+
+function resolveAuthTarget(args, config) {
+  if (args.type === 'custom') {
+    return {
+      loginUrl: args.loginUrl,
+      authCheckUrl: args.authCheckUrl,
+      requiredCookies: args.requiredCookie || [],
+    };
+  }
+
+  const envConfig = getEnvConfig(config, args.env);
+  const prefix = args.type === 'admin' ? 'admin' : 'customer';
+  const loginUrl = envConfig[`${prefix}LoginUrl`];
+  const authCheckUrl = envConfig[`${prefix}AuthCheckUrl`];
+  if (typeof loginUrl !== 'string' || !loginUrl.trim()) {
+    throw new CliError(`config_value_missing: env=${args.env} key=${prefix}LoginUrl`);
+  }
+  if (typeof authCheckUrl !== 'string' || !authCheckUrl.trim()) {
+    throw new CliError(`config_value_missing: env=${args.env} key=${prefix}AuthCheckUrl`);
+  }
+  const configuredRequired = Array.isArray(envConfig[`${prefix}RequiredCookies`])
+    ? envConfig[`${prefix}RequiredCookies`].map(String).filter(Boolean)
+    : [];
+  return {
+    loginUrl: loginUrl.trim(),
+    authCheckUrl: authCheckUrl.trim(),
+    requiredCookies: args.requiredCookie && args.requiredCookie.length ? args.requiredCookie : configuredRequired,
+  };
+}
+
+function serviceAuthFilePath() {
+  return process.env.SERVICE_API_AUTH_FILE || DEFAULT_AUTH_STATE_FILE;
+}
+
+function loadAuthState(authFilePath = serviceAuthFilePath()) {
+  if (!fs.existsSync(authFilePath)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(authFilePath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('auth state is not an object');
+    }
+    return parsed;
+  } catch (error) {
+    throw new CliError(`auth_state_invalid: ${authFilePath}: ${error.message}`);
+  }
+}
+
+async function updateAuthStateFile(authFilePath, updater) {
+  await fsp.mkdir(path.dirname(authFilePath), { recursive: true });
+  const lockPath = `${authFilePath}.lock`;
+  const startedAt = Date.now();
+  let lockHandle;
+  while (!lockHandle) {
+    try {
+      lockHandle = await fsp.open(lockPath, 'wx');
+    } catch (error) {
+      if (error && error.code === 'EEXIST' && Date.now() - startedAt < 5000) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
+      throw new CliError(`auth_state_lock_failed: ${lockPath}`);
+    }
+  }
+  try {
+    const current = loadAuthState(authFilePath);
+    const updated = updater(current);
+    const tmpPath = `${authFilePath}.${process.pid}.tmp`;
+    await fsp.writeFile(tmpPath, `${JSON.stringify(updated, null, 2)}\n`, 'utf8');
+    await fsp.rename(tmpPath, authFilePath);
+    return updated;
+  } finally {
+    await lockHandle.close().catch(() => {});
+    await fsp.unlink(lockPath).catch(() => {});
+  }
+}
+
+async function writeServiceAuthToFile(args, authFilePath, cookies) {
+  const authCookies = cookies.filter((cookie) => isAuthCheckCookie(cookie, args.authCheckUrl));
+  const missing = missingAuthCookies(authCookies, args.requiredCookies);
+  if (missing.length) throw new CliError(`auth_cookie_missing: required service-api cookies are missing: ${missing.join(', ')}`);
+  const cookieHeader = buildCookieHeader(authCookies);
+  const generatedAt = new Date().toISOString();
+  const names = cookieNames(authCookies);
+
+  await updateAuthStateFile(authFilePath, (current) => {
+    if (args.type === 'custom') {
+      const origin = originFromUrl(args.authCheckUrl);
+      current.customCookies = current.customCookies && typeof current.customCookies === 'object' && !Array.isArray(current.customCookies)
+        ? current.customCookies
+        : {};
+      current.customCookies[origin] = {
+        loginUrl: args.loginUrl,
+        authCheckUrl: args.authCheckUrl,
+        requiredCookies: args.requiredCookies || [],
+        cookie: cookieHeader,
+        updatedAt: generatedAt,
+      };
+      return current;
+    }
+
+    current[args.env] = current[args.env] && typeof current[args.env] === 'object' && !Array.isArray(current[args.env])
+      ? current[args.env]
+      : {};
+    const envConfig = current[args.env];
+    const prefix = args.type === 'admin' ? 'admin' : 'customer';
+    envConfig[`${prefix}Cookie`] = cookieHeader;
+    envConfig[`${prefix}CookieUpdatedAt`] = generatedAt;
+    return current;
+  });
+
+  return {
+    env: args.env || null,
+    type: args.type,
+    origin: originFromUrl(args.authCheckUrl),
+    auth_check_url: args.authCheckUrl,
+    generated_at: generatedAt,
+    source: 'playwright-node-service-api-auth',
+    auth_state_path: authFilePath,
+    cookie_count: authCookies.length,
+    cookie_names: names,
+    has_required_cookies: true,
+    missing_required_cookies: [],
+  };
+}
+
+async function handleAuth(args, config, authFilePath) {
+  const target = resolveAuthTarget(args, config);
+  args.loginUrl = target.loginUrl;
+  args.authCheckUrl = target.authCheckUrl;
+  args.requiredCookies = target.requiredCookies;
+
+  const playwrightModulePath = await resolvePlaywrightModulePath();
+  const { chromium } = require(playwrightModulePath);
+  const userDataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'codemao-troubleshoot-service-api-auth-login-'));
+  const profileDir = path.join(userDataDir, 'profile');
+  const context = await chromium.launchPersistentContext(profileDir, {
+    channel: 'chrome',
+    headless: false,
+    chromiumSandbox: true,
+  });
+  let settled = false;
+  let timeoutId;
+  let authWriteInFlight = false;
+  let detachedCleanup = false;
+  let settleResolve;
+  let settleReject;
+  const settledPromise = new Promise((resolve, reject) => {
+    settleResolve = resolve;
+    settleReject = reject;
+  });
+
+  function settleSuccess(payload) {
+    if (settled) return;
+    settled = true;
+    if (timeoutId) clearTimeout(timeoutId);
+    settleResolve(payload);
+  }
+  function settleError(error) {
+    if (settled) return;
+    settled = true;
+    if (timeoutId) clearTimeout(timeoutId);
+    settleReject(error);
+  }
+  async function tryWriteFromContext() {
+    if (authWriteInFlight || settled) return false;
+    authWriteInFlight = true;
+    try {
+      const cookies = (await context.cookies()).filter((cookie) => isAuthCheckCookie(cookie, args.authCheckUrl));
+      if (!hasRequiredAuthCookies(cookies, args.requiredCookies)) return false;
+      const result = await writeServiceAuthToFile(args, authFilePath, cookies);
+      await writeCompactJson({ step: 'auth-ok' });
+      detachedCleanup = true;
+      closeAndCleanupDetached(context, userDataDir);
+      settleSuccess({ ...result, detachedCleanup: true });
+      return true;
+    } finally {
+      authWriteInFlight = false;
+    }
+  }
+
+  try {
+    const browserLifecycle = installBrowserAuthCloseHandlers(context, settleError);
+    context.on('response', async (response) => {
+      if (settled) return;
+      try {
+        if (!looksLikeServiceAuthSuccess(response, args)) return;
+        await tryWriteFromContext();
+      } catch (error) {
+        settleError(error);
+      }
+    });
+    const page = context.pages()[0] || await context.newPage();
+    if (browserLifecycle.getPageCount() === 0) browserLifecycle.markPage(page);
+    timeoutId = setTimeout(() => settleError(new Error('登录等待超时，auth 已停止。')), Math.max(1, args.loginTimeout) * 1000);
+    await page.goto(args.loginUrl, { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' }).catch(() => {});
+    await writeCompactJson({ step: 'auth-opened' });
+    const result = await settledPromise;
+    if (result && result.detachedCleanup) return { detachedExit: true };
+    return result;
+  } finally {
+    if (!detachedCleanup) {
+      await context.close().catch(() => {});
+      await fsp.rm(userDataDir, { recursive: true }).catch(() => {});
+    }
+  }
+}
+
+function resolveRequestCookie(authState, env, authMode, finalUrl) {
+  if (authMode === 'admin' || authMode === 'customer') {
+    const key = `${authMode}Cookie`;
+    const envAuthState = authState && authState[env] && typeof authState[env] === 'object' && !Array.isArray(authState[env])
+      ? authState[env]
+      : {};
+    const cookie = envAuthState[key];
+    if (typeof cookie === 'string' && cookie.trim()) return cookie.trim();
+    throw new CliError(`${authMode}_cookie_missing: Missing ${authMode} cookie for env=${env}. Run: scripts/service-api auth ${authMode} --env ${env}`);
+  }
+  if (authMode === 'custom') {
+    const origin = originFromUrl(finalUrl);
+    const customCookies = authState && authState.customCookies && typeof authState.customCookies === 'object' && !Array.isArray(authState.customCookies)
+      ? authState.customCookies
+      : {};
+    const entry = customCookies[origin];
+    if (entry && typeof entry.cookie === 'string' && entry.cookie.trim()) return entry.cookie.trim();
+    throw new CliError(`custom_cookie_missing: no custom cookie for ${origin}. Run: scripts/service-api auth custom --login-url <login-url> --auth-check-url <auth-check-url-for-${origin}>`);
+  }
+  throw new CliError(`auth_mode_invalid: ${authMode}`, 2);
+}
+
+function buildAuthHeaders(authState, env, authMode, finalUrl) {
+  if (authMode === 'none') return {};
+  return { Cookie: resolveRequestCookie(authState, env, authMode, finalUrl) };
+}
+
+function joinUrl(baseUrl, requestPath) {
+  if (!requestPath) return baseUrl;
+  return new URL(requestPath.replace(/^\/+/, ''), `${baseUrl.replace(/\/+$/, '')}/`).toString();
+}
+
+async function buildRequestUrl(envConfig, env, service, index, url, requestPath) {
+  if (url) return { url, serviceResult: null };
+  if (!service) throw new CliError('request_target_missing: provide --service or --url');
+  const eurekaResult = await queryEurekaService(envConfig, env, service);
+  const serviceResult = buildEurekaServiceResult(env, service, eurekaResult, index);
+  if (!serviceResult.url) throw new CliError(`service_home_url_missing: ${service}`);
+  return { url: joinUrl(serviceResult.url, requestPath), serviceResult };
+}
+
+function appendQueryParams(urlValue, pairs) {
+  const url = new URL(urlValue);
+  for (const item of pairs || []) {
+    const separator = item.indexOf('=');
+    if (separator === -1) throw new CliError(`query_invalid: ${item}`);
+    url.searchParams.append(item.slice(0, separator), item.slice(separator + 1));
+  }
+  return url.toString();
+}
+
+function parseHeader(headerValue) {
+  const separator = headerValue.indexOf(':');
+  if (separator === -1) throw new CliError(`header_invalid: ${headerValue}`);
+  const key = headerValue.slice(0, separator).trim();
+  const value = headerValue.slice(separator + 1).trim();
+  if (!key) throw new CliError(`header_invalid: ${headerValue}`);
+  return [key, value];
+}
+
+function redactRequestHeaders(headers) {
+  const redacted = { ...headers };
+  for (const key of Object.keys(redacted)) {
+    if (key.toLowerCase() === 'cookie') redacted[key] = '<redacted>';
+  }
+  return redacted;
+}
+
+async function handleRequest(args, config, authState) {
+  const envConfig = args.env ? getEnvConfig(config, args.env) : null;
+  const target = await buildRequestUrl(envConfig, args.env, args.service, args.index, args.url, args.path || '');
+  const finalUrl = appendQueryParams(target.url, args.query);
+  const headers = buildAuthHeaders(authState, args.env, args.auth, finalUrl);
+  for (const header of args.header || []) {
+    const [key, value] = parseHeader(header);
+    headers[key] = value;
+  }
+  let payload;
+  if (args.jsonBody !== undefined) {
+    try {
+      payload = JSON.parse(args.jsonBody);
+    } catch (error) {
+      throw new CliError(`json_body_invalid: ${error.message}`);
+    }
+  }
+  const body = payload === undefined ? undefined : JSON.stringify(payload);
+  if (payload !== undefined && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  const response = await sendHttpRequest(args.method, finalUrl, headers, body, args.timeout);
+  const compact = {
+    status_code: response.statusCode,
+    body: response.body,
+  };
+  if (!args.raw) return compact;
+  return {
+    ...compact,
+    request: {
+      method: args.method.toUpperCase(),
+      url: finalUrl,
+      auth_mode: args.auth,
+      headers: redactRequestHeaders(headers),
+      json_body: payload === undefined ? null : payload,
+    },
+    service_resolution: target.serviceResult,
+    response_headers: response.headers,
+  };
+}
+
+async function run(argv) {
+  const args = parseArgs(argv);
+  if (args.help) {
+    printHelp(args.help);
+    return 0;
+  }
+  const configPath = args.config
+    || process.env.SERVICE_API_CONFIG_FILE
+    || path.join(__dirname, 'service-api.config.json');
+  const authFilePath = serviceAuthFilePath();
+  const config = needsConfig(args) ? loadConfig(configPath) : {};
+  const authState = needsAuthState(args) ? loadAuthState(authFilePath) : {};
+  let result;
+  if (args.command === 'discover') result = await handleDiscover(args, config);
+  if (args.command === 'config') result = await handleConfig(args, config);
+  if (args.command === 'auth') result = await handleAuth(args, config, authFilePath);
+  if (args.command === 'request') result = await handleRequest(args, config, authState);
+  if (args.command === 'auth' && result && result.detachedExit) process.exit(0);
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  return 0;
+}
+
+function needsConfig(args) {
+  if (args.command !== 'request') return true;
+  return Boolean(args.service) || args.auth !== 'none';
+}
+
+function needsAuthState(args) {
+  if (args.command === 'auth') return false;
+  return args.command === 'request' && args.auth !== 'none';
+}
+
+if (require.main === module) {
+  run(process.argv.slice(2)).then((exitCode) => {
+    process.exitCode = exitCode;
+  }).catch((error) => {
+    const exitCode = error && error.exitCode ? error.exitCode : 1;
+    process.stderr.write(exitCode === 2 ? `[${error.message}]\n` : `${error.message}\n`);
+    process.exitCode = exitCode;
+  });
+}
+
+module.exports = {
+  parseArgs,
+  appendQueryParams,
+  buildAuthHeaders,
+  compactApplication,
+  compactInstance,
+  extractApolloApps,
+  installBrowserAuthCloseHandlers,
+  missingAuthCookies,
+  normalizeUrlNoHash,
+  originFromUrl,
+  paginateItems,
+  resolveRequestCookie,
+  looksLikeServiceAuthSuccess,
+  isSealedCredential,
+  loadAuthState,
+  extractApolloConfig,
+  sealPasswordFields,
+  sealUrlUserinfoPassword,
+  serviceAuthFilePath,
+  unsealCredential,
+  writeServiceAuthToFile,
+};
