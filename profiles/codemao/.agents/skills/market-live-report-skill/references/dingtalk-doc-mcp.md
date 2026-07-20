@@ -44,6 +44,7 @@ mcporter config add dingtalk-docs --url "PASTE_YOUR_STREAMABLE_HTTP_URL_HERE"
 - `create_document` — `name`、`folderId`、初始 `markdown`
 - `update_document` — 已有文档 `nodeId`，`mode=overwrite|append`
 - `search_documents` — 按标题关键字查找是否已存在当日文档
+- `get_file_upload_info` + HTTP PUT + `commit_uploaded_file` — 上传本地监控截图到同一钉钉目录，并把返回的在线文件 URL 写入文档 Markdown
 
 ## 本 skill 中的脚本
 
@@ -55,4 +56,6 @@ node scripts/create_dingtalk_duty_document.js \
   --target "钉钉文档"
 ```
 
-`publish_duty_document.js --dingtalk-doc` 会在生成本地 txt 后尝试调用文档 MCP 创建。
+`publish_duty_document.js --dingtalk-doc --include-monitor-screenshots` 会自动上传
+`output/duty-docs/assets/YYYY-MM-DD/*.png` 中匹配的监控截图，并用钉钉文件链接替换文档里的本地图片路径；未加
+`--dingtalk-doc` 时仍只生成本地 Markdown。

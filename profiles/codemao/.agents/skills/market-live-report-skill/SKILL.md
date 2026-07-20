@@ -14,7 +14,7 @@ Prefer the bundled parser script over ad hoc extraction. The script gives determ
 When the user only invokes this skill, or says to run/use `market-live-report-skill` without adding a new live-report block, treat the request as the daily duty-document workflow:
 
 1. read today's live rows from the default DingTalk spreadsheet and validate the live-stream API cookie with the first available `直播ID`;
-2. if the cookie is missing or expired, open `https://internal-account.codemao.cn/login`, wait for browser login, save the refreshed cookie locally, and validate again;
+2. if the cookie is missing or expired, open `https://internal-account.codemao.cn/login`, wait for browser login, save the refreshed cookie locally, close the browser, and validate again;
 3. collect or schedule 15 / 20 / 30 minute live statistics;
 4. capture or backfill Grafana monitor dashboard screenshots;
 5. generate the daily `YYYY-MM-DD 直播值班记录` document;
@@ -57,8 +57,8 @@ If both meanings are possible, prefer doing the duty-document workflow first and
 6. Use `scripts/build_schedule_payload.js` to generate a schedule-notification payload from the same report input.
 7. Use `scripts/create_dingtalk_schedule.js` with the DingTalk calendar MCP to create the real calendar event and add attendees.
 8. At T+15 / T+20 / T+30 after each live starts, run `scripts/collect_live_stats.js` or `scripts/collect_live_stats_batch.js` to cache API snapshots under `references/live-stats-cache/YYYY-MM-DD.json`.
-9. If monitor evidence is needed, run `scripts/schedule_monitor_dashboard_screenshots.js` before the live starts. It opens `https://grafana.codemao.cn/d/SpSQKcpMl13/ying-xiao-zhi-bo-overviews?orgId=1&refresh=30s` directly and captures screenshots at T+15 / T+20 / T+30 under `output/duty-docs/assets/YYYY-MM-DD/`.
-10. Use `scripts/build_duty_document.js` or `scripts/publish_duty_document.js` to render the daily duty document body (title + 分时段观看人数).
+9. If monitor evidence is needed, run `scripts/schedule_monitor_dashboard_screenshots.js` before the live starts. It opens `https://grafana.codemao.cn/d/SpSQKcpMl13/ying-xiao-zhi-bo-overviews?orgId=1&refresh=30s` directly, captures screenshots at T+15 / T+20 / T+30 under `output/duty-docs/assets/YYYY-MM-DD/`, then closes the browser.
+10. Use `scripts/build_duty_document.js` or `scripts/publish_duty_document.js` to render the daily duty document body (title + 分时段观看人数). When publishing to DingTalk with monitor screenshots, pass `--dingtalk-doc --include-monitor-screenshots`; the script uploads local screenshots to the DingTalk document folder and inserts DingTalk file links into the online document.
 11. Use `scripts/schedule_actual_count_update.js` to update the spreadsheet `实际人数` column at T+120 after each live starts. The value is the live API `data.totalCount`.
 12. Prefer `scripts/process_live_report.js` when the user wants one-step execution for spreadsheet writing, calendar creation, and/or duty document output.
 
@@ -72,6 +72,7 @@ If you use `--auto-sheet`, the writer derives the target sheet from the parsed l
 - sheet name format is `M{month}W{weekOfMonth}`
 - example: `2026-05-05` and `2026-05-08` both map to `M5W1`
 - if a week crosses months, group it under the month of that week's Monday
+- when a new weekly sheet is created, copy formats from `M6W5` by default, then repeat `M6W5!A2:G5` data-row formats over later data rows; use `--style-template-sheet <sheetNameOrId>` / `DINGTALK_STYLE_TEMPLATE_SHEET` or `--style-data-range <A1Range>` / `DINGTALK_STYLE_DATA_RANGE` to override, or `--no-copy-template-style` to skip
 
 ## Input contract
 
@@ -204,6 +205,19 @@ node scripts/write_dingtalk_spreadsheet.js \
   --pretty
 ```
 
+Newly created sheets copy the current table style from `M6W5` by default, using `copy_range pasteType=formats` over `A1:G200`. If actual data has more rows than the template data block, the writer repeats `M6W5!A2:G5` formats onto later data rows before merging date/duty columns. Override the template sheet when needed:
+
+```bash
+PATH=/Users/cm/.n/bin:$PATH \
+node scripts/write_dingtalk_spreadsheet.js \
+  --raw input.txt \
+  --node-id "https://alidocs.dingtalk.com/i/nodes/Obva6QBXJw9w2ZrQI6bN2RwGWn4qY5Pr" \
+  --target "钉钉表格" \
+  --auto-sheet \
+  --style-template-sheet M6W5 \
+  --pretty
+```
+
 Append rows to an existing sheet without rewriting the header:
 
 ```bash
@@ -251,7 +265,7 @@ When the user only provides a cookie and no live-report text, use the simple ent
 node scripts/run_with_cookie.js --cookie 'PASTE_COOKIE_VALUE' --pretty
 ```
 
-When no cookie is passed, `run_with_cookie.js` reads the local config cookie first. If a live ID is available, it validates that cookie before collecting. If the cookie is missing or expired, it opens `https://internal-account.codemao.cn/login`; after the user finishes login, `scripts/login_live_stream_cookie.js` extracts Codemao cookies from the browser debugging session, saves them to `references/live-stream-api.local.json`, validates again, and then continues.
+When no cookie is passed, `run_with_cookie.js` reads the local config cookie first. If a live ID is available, it validates that cookie before collecting. If the cookie is missing or expired, it opens `https://internal-account.codemao.cn/login`; after the user finishes login, `scripts/login_live_stream_cookie.js` extracts Codemao cookies from the browser debugging session, saves them to `references/live-stream-api.local.json`, closes the browser, validates again, and then continues.
 
 ```bash
 node scripts/run_with_cookie.js --pretty
@@ -353,6 +367,7 @@ node scripts/schedule_monitor_dashboard_screenshots.js \
 ```
 
 By default screenshot URLs use absolute Grafana time ranges (`from=live start`, `to=milestone time`) so historical backfills do not capture the current `Last 30 minutes`. Use `--current-time-range` only when a live dashboard-relative screenshot is intended.
+After all requested screenshots are captured, or if dashboard initialization fails, the screenshot script closes the browser it opened.
 
 Each milestone captures three viewport screenshots by default:
 - `overview`: top Ingress / microservice / Pod summary area;
@@ -386,6 +401,20 @@ node scripts/publish_duty_document.js \
   --stats-cache-dir references/live-stats-cache \
   --format markdown \
   --include-monitor-screenshots \
+  --pretty
+```
+
+Publish Markdown with monitor screenshots to DingTalk without writing a local duty-document body/meta file. This uploads matching local screenshots under `output/duty-docs/assets/YYYY-MM-DD/` before creating/updating the online document:
+
+```bash
+node scripts/publish_duty_document.js \
+  --raw input.txt \
+  --stats-cache-dir references/live-stats-cache \
+  --format markdown \
+  --include-monitor-screenshots \
+  --dingtalk-doc \
+  --skip-local-output \
+  --doc-target "钉钉文档" \
   --pretty
 ```
 
@@ -431,7 +460,9 @@ node scripts/process_live_report.js \
   --node-id "https://alidocs.dingtalk.com/i/nodes/Obva6QBXJw9w2ZrQI6bN2RwGWn4qY5Pr" \
   --auto-sheet \
   --duty-doc \
-  --duty-doc-output-dir output/duty-docs \
+  --duty-doc-dingtalk \
+  --duty-doc-skip-local-output \
+  --duty-doc-include-monitor-screenshots \
   --skip-sheet \
   --skip-calendar \
   --pretty
@@ -482,6 +513,7 @@ If the DingTalk MCP is unavailable, stop after producing:
 - When creating a new sheet from scratch, prefer `--include-header` and `--mode update-range`.
 - Use `--auto-sheet` when the user wants natural-week routing such as `M5W1`, `M5W2`, and so on.
 - If the auto-routed weekly sheet does not exist yet, the writer will create it and seed the header plus merged date/duty cells automatically.
+- When creating a weekly sheet, copy formats from `M6W5` by default and repeat the `A2:G5` data-row style block for additional rows. Use `--style-template-sheet` / `DINGTALK_STYLE_TEMPLATE_SHEET` or `--style-data-range` / `DINGTALK_STYLE_DATA_RANGE` to choose different sources.
 - When appending rows to an existing sheet, merge `日期` and `值班安排` by contiguous same-day blocks. If the appended report date already exists immediately above, extend the existing day block (for example merge all 05-28 rows together) instead of creating a separate merge block for the new append.
 - For schedule payloads, default the end time to `start + 60 minutes`.
 - For schedule payloads, default attendees to `值班后端 + 固定胡露`, then append any extra notify targets found in the text.
@@ -492,4 +524,4 @@ If the DingTalk MCP is unavailable, stop after producing:
 - When the user asks for a single action such as “处理下面报备，并同步写表和创建日程”, prefer `scripts/process_live_report.js`.
 - When the user asks to “生成值班文档” / “写值班记录”, use `collect_live_stats_*` during the live, then `publish_duty_document.js` after caches exist.
 - API cookie may be passed with `--cookie` for a one-off run, or stored in `references/live-stream-api.local.json` / `LIVE_STREAM_COOKIE`; never store cookies in skill source or commits.
-- Wire 钉钉文档 MCP (mcpId=9629) in `~/.cursor/mcp.json`, then use `create_dingtalk_duty_document.js` or `publish_duty_document.js --dingtalk-doc`.
+- Wire 钉钉文档 MCP (mcpId=9629) in `~/.cursor/mcp.json`, then use `create_dingtalk_duty_document.js` or `publish_duty_document.js --dingtalk-doc`. Add `--include-monitor-screenshots --skip-local-output` when screenshots should be uploaded and embedded in the online document instead of writing a local duty-document body.

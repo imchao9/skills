@@ -11,6 +11,8 @@ const DEFAULT_ADAPTER = path.resolve(
 );
 
 const HEADER_ROW = ["日期", "直播ID", "事项", "时间", "预计人数/覆盖人数", "实际人数", "值班安排"];
+const DEFAULT_STYLE_TEMPLATE_SHEET = "M6W5";
+const DEFAULT_STYLE_DATA_RANGE = "A2:G5";
 
 function parseArgs(argv) {
   const args = {
@@ -28,6 +30,10 @@ function parseArgs(argv) {
     mode: "append-rows",
     dryRun: false,
     includeHeader: false,
+    copyTemplateStyle: true,
+    styleTemplateSheet: process.env.DINGTALK_STYLE_TEMPLATE_SHEET || DEFAULT_STYLE_TEMPLATE_SHEET,
+    styleTemplateRange: "A1:G200",
+    styleDataRange: process.env.DINGTALK_STYLE_DATA_RANGE || DEFAULT_STYLE_DATA_RANGE,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -75,6 +81,19 @@ function parseArgs(argv) {
         break;
       case "--include-header":
         args.includeHeader = true;
+        break;
+      case "--style-template-sheet":
+        args.styleTemplateSheet = argv[++i];
+        args.copyTemplateStyle = true;
+        break;
+      case "--style-template-range":
+        args.styleTemplateRange = argv[++i];
+        break;
+      case "--style-data-range":
+        args.styleDataRange = argv[++i];
+        break;
+      case "--no-copy-template-style":
+        args.copyTemplateStyle = false;
         break;
       default:
         throw new Error(`unexpected argument: ${token}`);
@@ -183,7 +202,7 @@ function isSheetNotFound(output) {
   return code === "invalidRequest.resource.notFound" || message.includes("resource was not found");
 }
 
-function ensureRequiredTools(adapter, schemaText, createSheet, mode) {
+function ensureRequiredTools(adapter, schemaText, createSheet, mode, copyTemplateStyle, styleTemplateSheet) {
   const required = [];
   if (createSheet) {
     required.push(adapter.tools.create_sheet.name);
@@ -205,12 +224,31 @@ function ensureRequiredTools(adapter, schemaText, createSheet, mode) {
       }
     }
   }
+  if (createSheet && copyTemplateStyle && adapter.tools.copy_range) {
+    required.push(adapter.tools.copy_range.name);
+    if (!styleTemplateSheet && adapter.tools.get_all_sheets) {
+      required.push(adapter.tools.get_all_sheets.name);
+    }
+  }
   return required.filter((toolName) => !schemaText.includes(toolName));
 }
 
 function hasTool(adapter, schemaText, toolKey) {
   const tool = adapter.tools[toolKey];
   return Boolean(tool?.name && schemaText.includes(tool.name));
+}
+
+function parseA1Range(a1Range) {
+  const match = String(a1Range || "").match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    startColumn: match[1].toUpperCase(),
+    startRow: Number(match[2]),
+    endColumn: match[3].toUpperCase(),
+    endRow: Number(match[4]),
+  };
 }
 
 function buildValues(payload, includeHeader) {
@@ -260,6 +298,194 @@ function weekOfMonthByWeekStart(weekStart) {
   return Math.floor(diffDays / 7) + 1;
 }
 
+function parseWeeklySheetName(name) {
+  const match = String(name || "").match(/^M(\d+)W(\d+)$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    month: Number(match[1]),
+    week: Number(match[2]),
+  };
+}
+
+function compareWeeklySheetNames(leftName, rightName) {
+  const left = parseWeeklySheetName(leftName);
+  const right = parseWeeklySheetName(rightName);
+  if (!left && !right) {
+    return String(leftName || "").localeCompare(String(rightName || ""));
+  }
+  if (!left) {
+    return -1;
+  }
+  if (!right) {
+    return 1;
+  }
+  return left.month - right.month || left.week - right.week;
+}
+
+function listSheets(args, adapter, result, purpose = "list-sheets") {
+  const listPayload = renderArgs(adapter.tools.get_all_sheets.args, {
+    node_id: args.nodeId,
+  });
+  const output = safeJson(mcporterCall(args.target, adapter.tools.get_all_sheets.name, listPayload));
+  result.actions.push({
+    tool: adapter.tools.get_all_sheets.name,
+    args: listPayload,
+    output,
+    purpose,
+  });
+  return Array.isArray(output?.sheets) ? output.sheets : [];
+}
+
+function selectStyleTemplateSheet(args, sheets) {
+  if (args.styleTemplateSheet) {
+    return args.styleTemplateSheet;
+  }
+
+  const candidates = sheets
+    .map((sheet) => sheet.name || sheet.sheetId)
+    .filter((name) => name && name !== args.sheetName && parseWeeklySheetName(name))
+    .sort(compareWeeklySheetNames);
+  return candidates[candidates.length - 1] || null;
+}
+
+function applyTemplateStyle(args, adapter, schemaText, result) {
+  if (
+    !args.copyTemplateStyle ||
+    !hasTool(adapter, schemaText, "copy_range") ||
+    (!args.styleTemplateSheet && !hasTool(adapter, schemaText, "get_all_sheets"))
+  ) {
+    return null;
+  }
+
+  const sheets = args.styleTemplateSheet ? [] : listSheets(args, adapter, result, "select-style-template-sheet");
+  const sourceSheetId = selectStyleTemplateSheet(args, sheets);
+  if (!sourceSheetId) {
+    result.style_template = {
+      copied: false,
+      reason: "no weekly template sheet found",
+    };
+    return null;
+  }
+
+  const copyPayload = renderArgs(adapter.tools.copy_range.args, {
+    node_id: args.nodeId,
+    source_sheet_id: sourceSheetId,
+    target_sheet_id: args.sheetName,
+    source_range: args.styleTemplateRange,
+    destination_range: "A1",
+    paste_type: "formats",
+  });
+  const output = safeJson(mcporterCall(args.target, adapter.tools.copy_range.name, copyPayload));
+  result.actions.push({
+    tool: adapter.tools.copy_range.name,
+    args: copyPayload,
+    output,
+    purpose: "copy-template-style",
+  });
+  result.style_template = {
+    copied: Boolean(output?.success),
+    source_sheet_id: sourceSheetId,
+    source_range: args.styleTemplateRange,
+    target_sheet_id: args.sheetName,
+    destination_range: "A1",
+  };
+  return result.style_template;
+}
+
+function applyRepeatedDataRowStyle(args, adapter, schemaText, result, dataStartRow, dataRowCount) {
+  if (
+    !args.copyTemplateStyle ||
+    !hasTool(adapter, schemaText, "copy_range") ||
+    !args.styleTemplateSheet ||
+    !dataStartRow ||
+    dataRowCount <= 0
+  ) {
+    return null;
+  }
+
+  const parsedRange = parseA1Range(args.styleDataRange);
+  if (!parsedRange) {
+    result.data_row_style = {
+      copied: false,
+      reason: `invalid style data range: ${args.styleDataRange}`,
+    };
+    return null;
+  }
+
+  const templateRowCount = parsedRange.endRow - parsedRange.startRow + 1;
+  const firstUncoveredRowOffset = templateRowCount;
+  if (dataRowCount <= firstUncoveredRowOffset) {
+    result.data_row_style = {
+      copied: false,
+      reason: "data rows fit template data style range",
+      source_range: args.styleDataRange,
+      covered_rows: dataRowCount,
+    };
+    return result.data_row_style;
+  }
+
+  const copies = [];
+  for (let offset = firstUncoveredRowOffset; offset < dataRowCount; offset += templateRowCount) {
+    const destinationRow = dataStartRow + offset;
+    const rowsToCover = Math.min(templateRowCount, dataRowCount - offset);
+    const sourceEndRow = parsedRange.startRow + rowsToCover - 1;
+    const sourceRange = `${parsedRange.startColumn}${parsedRange.startRow}:${parsedRange.endColumn}${sourceEndRow}`;
+    const copyPayload = renderArgs(adapter.tools.copy_range.args, {
+      node_id: args.nodeId,
+      source_sheet_id: args.styleTemplateSheet,
+      target_sheet_id: args.sheetName,
+      source_range: sourceRange,
+      destination_range: `${parsedRange.startColumn}${destinationRow}`,
+      paste_type: "formats",
+    });
+    const output = safeJson(mcporterCall(args.target, adapter.tools.copy_range.name, copyPayload));
+    result.actions.push({
+      tool: adapter.tools.copy_range.name,
+      args: copyPayload,
+      output,
+      purpose: "copy-repeated-data-row-style",
+    });
+    copies.push({
+      source_range: sourceRange,
+      destination_range: `${parsedRange.startColumn}${destinationRow}`,
+      copied: Boolean(output?.success),
+    });
+  }
+
+  result.data_row_style = {
+    copied: copies.some((copy) => copy.copied),
+    source_sheet_id: args.styleTemplateSheet,
+    source_range: args.styleDataRange,
+    target_sheet_id: args.sheetName,
+    data_start_row: dataStartRow,
+    data_row_count: dataRowCount,
+    copies,
+  };
+  return result.data_row_style;
+}
+
+function unmergeRanges(args, adapter, schemaText, result, ranges, purpose) {
+  if (!ranges.length || !hasTool(adapter, schemaText, "unmerge_range")) {
+    return;
+  }
+
+  for (const rangeAddress of ranges) {
+    const unmergePayload = renderArgs(adapter.tools.unmerge_range.args, {
+      node_id: args.nodeId,
+      sheet_id: args.sheetName,
+      range_address: rangeAddress,
+    });
+    result.actions.push({
+      tool: adapter.tools.unmerge_range.name,
+      args: unmergePayload,
+      output: safeJson(mcporterCall(args.target, adapter.tools.unmerge_range.name, unmergePayload)),
+      purpose,
+    });
+  }
+}
+
 function buildContext(args, values) {
   const endRow = args.startRow + values.length - 1;
   return {
@@ -286,6 +512,35 @@ function buildMergeRanges(args, payload, values, baseStartRow = null) {
     `A${dataStartRow}:A${dataEndRow}`,
     `G${dataStartRow}:G${dataEndRow}`,
   ];
+}
+
+function buildTemplateDataMergeRanges(args, dataStartRow) {
+  const parsedRange = parseA1Range(args.styleDataRange);
+  if (!parsedRange || !dataStartRow) {
+    return [];
+  }
+  const templateRowCount = parsedRange.endRow - parsedRange.startRow + 1;
+  const endRow = dataStartRow + templateRowCount - 1;
+  return [`A${dataStartRow}:A${endRow}`, `G${dataStartRow}:G${endRow}`];
+}
+
+function buildRepeatedDataStyleMergeRanges(args, dataStartRow, dataRowCount) {
+  const parsedRange = parseA1Range(args.styleDataRange);
+  if (!parsedRange || !dataStartRow || dataRowCount <= 0) {
+    return [];
+  }
+
+  const templateRowCount = parsedRange.endRow - parsedRange.startRow + 1;
+  const ranges = [];
+  for (let offset = templateRowCount; offset < dataRowCount; offset += templateRowCount) {
+    const startRow = dataStartRow + offset;
+    const rowsToCover = Math.min(templateRowCount, dataRowCount - offset);
+    const endRow = startRow + rowsToCover - 1;
+    if (startRow < endRow) {
+      ranges.push(`A${startRow}:A${endRow}`, `G${startRow}:G${endRow}`);
+    }
+  }
+  return ranges;
 }
 
 function extractStartRowFromA1(a1Notation) {
@@ -521,6 +776,10 @@ function main() {
     mode: args.mode,
     create_sheet: args.createSheet,
     include_header: args.includeHeader,
+    copy_template_style: args.copyTemplateStyle,
+    style_template_sheet: args.styleTemplateSheet,
+    style_template_range: args.styleTemplateRange,
+    style_data_range: args.styleDataRange,
     row_count: values.length,
     range_address: context.range_address,
     merge_ranges: mergeRanges,
@@ -542,7 +801,14 @@ function main() {
 
   ensureMcporter();
   const schemaText = mcporterList(args.target);
-  const missing = ensureRequiredTools(adapter, schemaText, args.createSheet, args.mode);
+  const missing = ensureRequiredTools(
+    adapter,
+    schemaText,
+    args.createSheet,
+    args.mode,
+    args.copyTemplateStyle,
+    args.styleTemplateSheet,
+  );
   if (missing.length) {
     throw new Error(`configured tools are missing from MCP schema: ${missing.join(", ")}`);
   }
@@ -604,6 +870,19 @@ function main() {
         args: updatePayload,
         output: updateOutput,
       });
+      applyTemplateStyle(args, adapter, schemaText, result);
+      applyRepeatedDataRowStyle(args, adapter, schemaText, result, 2, payload.sheet_rows_sparse?.length || 0);
+      unmergeRanges(
+        args,
+        adapter,
+        schemaText,
+        result,
+        [
+          ...buildTemplateDataMergeRanges(args, 2),
+          ...buildRepeatedDataStyleMergeRanges(args, 2, payload.sheet_rows_sparse?.length || 0),
+        ],
+        "clear-template-data-merge",
+      );
       mergeRanges = buildMergeRanges(
         {
           ...args,
@@ -615,6 +894,7 @@ function main() {
         1,
       );
       result.merge_ranges = mergeRanges;
+      unmergeRanges(args, adapter, schemaText, result, mergeRanges, "clear-template-merge-before-final-merge");
     }
   } else {
     const updatePayload = renderArgs(adapter.tools.update_range.args, context);
@@ -623,6 +903,24 @@ function main() {
       args: updatePayload,
       output: safeJson(mcporterCall(args.target, adapter.tools.update_range.name, updatePayload)),
     });
+  }
+
+  if (args.createSheet) {
+    applyTemplateStyle(args, adapter, schemaText, result);
+    const dataStartRow = args.includeHeader ? args.startRow + 1 : args.startRow;
+    applyRepeatedDataRowStyle(args, adapter, schemaText, result, dataStartRow, payload.sheet_rows_sparse?.length || 0);
+    unmergeRanges(
+      args,
+      adapter,
+      schemaText,
+      result,
+      [
+        ...buildTemplateDataMergeRanges(args, dataStartRow),
+        ...buildRepeatedDataStyleMergeRanges(args, dataStartRow, payload.sheet_rows_sparse?.length || 0),
+      ],
+      "clear-template-data-merge",
+    );
+    unmergeRanges(args, adapter, schemaText, result, mergeRanges, "clear-template-merge-before-final-merge");
   }
 
   if (mergeRanges.length) {

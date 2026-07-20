@@ -6,6 +6,7 @@ const path = require("path");
 const { parseText } = require("./parse_live_report");
 const {
   CdpWebSocket,
+  closeBrowser,
   launchBrowser,
   waitForPageWebSocket,
   sleep,
@@ -322,32 +323,37 @@ function dashboardUrlForJob(args, job) {
 }
 
 async function openDashboard(args) {
-  launchBrowser({
+  const launchedBrowser = launchBrowser({
     loginUrl: args.dashboardUrl,
     port: args.browserPort,
     userDataDir: args.browserUserDataDir,
     chromePath: args.chromePath,
     chromeApp: process.env.CHROME_APP || "Google Chrome",
   });
-
-  const wsUrl = await waitForPageWebSocket(args.browserPort, args.dashboardUrl, 60000);
-  const cdp = new CdpWebSocket(wsUrl);
-  await cdp.connect();
-  await cdp.send("Page.enable");
-  await cdp.send("Runtime.enable");
-  await cdp.send("Emulation.setDeviceMetricsOverride", {
-    width: args.viewportWidth,
-    height: args.viewportHeight,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await cdp.send("Page.navigate", { url: args.dashboardUrl });
-  await waitForDocumentReady(cdp, 60000);
-  if (shouldClickDashboardLink(args)) {
-    await clickDashboardLink(cdp, args);
+  let cdp = null;
+  try {
+    const wsUrl = await waitForPageWebSocket(args.browserPort, args.dashboardUrl, 60000);
+    cdp = new CdpWebSocket(wsUrl);
+    await cdp.connect();
+    await cdp.send("Page.enable");
+    await cdp.send("Runtime.enable");
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: args.viewportWidth,
+      height: args.viewportHeight,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await cdp.send("Page.navigate", { url: args.dashboardUrl });
+    await waitForDocumentReady(cdp, 60000);
+    if (shouldClickDashboardLink(args)) {
+      await clickDashboardLink(cdp, args);
+    }
+    await sleep(args.waitAfterClickMs);
+    return { cdp, launchedBrowser };
+  } catch (error) {
+    await closeBrowser(cdp, launchedBrowser, args.browserPort);
+    throw error;
   }
-  await sleep(args.waitAfterClickMs);
-  return cdp;
 }
 
 function shouldClickDashboardLink(args) {
@@ -798,6 +804,7 @@ async function runScheduler(args, parsed) {
   const jobs = buildJobs(parsed, args.milestones);
   const results = [];
   let cdp = null;
+  let launchedBrowser = null;
 
   try {
     for (const job of jobs) {
@@ -824,7 +831,9 @@ async function runScheduler(args, parsed) {
       }
 
       if (!cdp) {
-        cdp = await openDashboard(args);
+        const dashboard = await openDashboard(args);
+        cdp = dashboard.cdp;
+        launchedBrowser = dashboard.launchedBrowser;
       }
 
       try {
@@ -847,7 +856,7 @@ async function runScheduler(args, parsed) {
     }
   } finally {
     if (cdp) {
-      cdp.close();
+      await closeBrowser(cdp, launchedBrowser, args.browserPort);
     }
   }
 

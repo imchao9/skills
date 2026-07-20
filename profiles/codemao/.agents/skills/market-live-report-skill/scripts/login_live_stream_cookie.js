@@ -130,15 +130,16 @@ function launchBrowser(args) {
       stdio: "ignore",
     });
     child.unref();
-    return;
+    return { process: child, closeWithCdp: true };
   }
 
   if (process.platform === "darwin") {
-    cp.spawn("open", ["-na", args.chromeApp, "--args", ...chromeArgs], {
+    const child = cp.spawn("open", ["-na", args.chromeApp, "--args", ...chromeArgs], {
       detached: true,
       stdio: "ignore",
-    }).unref();
-    return;
+    });
+    child.unref();
+    return { process: null, closeWithCdp: true };
   }
 
   const candidates = [
@@ -155,10 +156,60 @@ function launchBrowser(args) {
         stdio: "ignore",
       });
       child.unref();
-      return;
+      return { process: child, closeWithCdp: true };
     } catch {}
   }
   throw new Error("cannot launch Chrome/Chromium; pass --chrome-path");
+}
+
+async function connectBrowserCdp(port) {
+  const version = await httpJson(`http://127.0.0.1:${port}/json/version`);
+  if (!version.webSocketDebuggerUrl) {
+    return null;
+  }
+  const browserCdp = new CdpWebSocket(version.webSocketDebuggerUrl);
+  await browserCdp.connect();
+  return browserCdp;
+}
+
+async function closeBrowser(cdp, launchedBrowser = null, port = null) {
+  let closedByCdp = false;
+  if (cdp) {
+    try {
+      await cdp.send("Browser.close");
+      closedByCdp = true;
+    } catch {}
+  }
+
+  if (!closedByCdp && port) {
+    let browserCdp = null;
+    try {
+      browserCdp = await connectBrowserCdp(port);
+      if (browserCdp) {
+        await browserCdp.send("Browser.close");
+        closedByCdp = true;
+      }
+    } catch {
+    } finally {
+      if (browserCdp) {
+        browserCdp.close();
+      }
+    }
+  }
+
+  if (!closedByCdp && launchedBrowser?.process?.pid) {
+    try {
+      process.kill(-launchedBrowser.process.pid, "SIGTERM");
+    } catch {
+      try {
+        launchedBrowser.process.kill("SIGTERM");
+      } catch {}
+    }
+  }
+
+  if (cdp) {
+    cdp.close();
+  }
 }
 
 async function httpJson(url, options = {}) {
@@ -484,12 +535,13 @@ async function main() {
   process.stderr.write(
     `Opening ${args.loginUrl}. Please finish login in the browser window; cookie will be saved after validation.\n`,
   );
-  launchBrowser(args);
-  const wsUrl = await waitForPageWebSocket(args.port, args.loginUrl, Math.min(args.timeoutMs, 60000));
-  const cdp = new CdpWebSocket(wsUrl);
-  await cdp.connect();
+  const launchedBrowser = launchBrowser(args);
+  let cdp = null;
 
   try {
+    const wsUrl = await waitForPageWebSocket(args.port, args.loginUrl, Math.min(args.timeoutMs, 60000));
+    cdp = new CdpWebSocket(wsUrl);
+    await cdp.connect();
     const collected = await waitForLoginCookie(args, cdp);
     const payload = {
       ok: true,
@@ -502,7 +554,7 @@ async function main() {
     };
     process.stdout.write(`${JSON.stringify(payload, null, args.pretty ? 2 : 0)}\n`);
   } finally {
-    cdp.close();
+    await closeBrowser(cdp, launchedBrowser, args.port);
   }
 }
 
@@ -518,6 +570,8 @@ module.exports = {
   DEFAULT_LOGIN_URL,
   DEFAULT_PORT,
   DEFAULT_TIMEOUT_MS,
+  closeBrowser,
+  connectBrowserCdp,
   launchBrowser,
   waitForPageWebSocket,
   sleep,

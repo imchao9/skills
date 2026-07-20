@@ -9,6 +9,10 @@ const {
   normalizeDocumentFormat,
 } = require("./build_duty_document");
 const { defaultCacheDir } = require("./lib/live_stats_cache");
+const {
+  listMonitorScreenshots,
+  renderMonitorScreenshotsSection,
+} = require("./lib/monitor_screenshots");
 const cp = require("child_process");
 
 const CREATE_DINGTALK_DOC = path.resolve(__dirname, "./create_dingtalk_duty_document.js");
@@ -45,6 +49,7 @@ function parseArgs(argv) {
     includeResourceSection: false,
     folderConfig: DEFAULT_FOLDER_CONFIG,
     dryRun: false,
+    skipLocalOutput: false,
     dingtalkDoc: false,
     docTarget: process.env.DINGTALK_DOC_MCP_TARGET || "钉钉文档",
     config: null,
@@ -52,7 +57,6 @@ function parseArgs(argv) {
     format: "markdown",
     includeMonitorScreenshots: false,
     monitorScreenshotDir: DEFAULT_MONITOR_ASSETS_DIR,
-    embedLocalMonitorScreenshots: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -88,6 +92,9 @@ function parseArgs(argv) {
       case "--dry-run":
         args.dryRun = true;
         break;
+      case "--skip-local-output":
+        args.skipLocalOutput = true;
+        break;
       case "--dingtalk-doc":
         args.dingtalkDoc = true;
         break;
@@ -109,9 +116,6 @@ function parseArgs(argv) {
         break;
       case "--include-monitor-screenshots":
         args.includeMonitorScreenshots = true;
-        break;
-      case "--embed-local-monitor-screenshots":
-        args.embedLocalMonitorScreenshots = true;
         break;
       case "--monitor-screenshot-dir":
         args.monitorScreenshotDir = path.resolve(argv[++i]);
@@ -136,137 +140,6 @@ function readParsed(args) {
 
 function sanitizeFileName(title) {
   return title.replace(/[\\/:*?"<>|]/g, "_");
-}
-
-function listMonitorScreenshots(args, date) {
-  const dateDir = path.join(args.monitorScreenshotDir, date);
-  if (!fs.existsSync(dateDir)) {
-    return [];
-  }
-  const files = fs
-    .readdirSync(dateDir)
-    .filter((fileName) => /\.(png|jpe?g|webp)$/i.test(fileName))
-    .sort();
-  const latestBySlot = new Map();
-  const unmatched = [];
-  for (const fileName of files) {
-    const match = fileName.match(
-      /^monitor-(.+)-T(\d+)-\d{8}-\d{6}-captured-(\d{8}-\d{6})\.(png|jpe?g|webp)$/i,
-    );
-    if (!match) {
-      unmatched.push(fileName);
-      continue;
-    }
-    const [, section, milestone, capturedAt] = match;
-    const key = `${milestone}:${section}`;
-    const previous = latestBySlot.get(key);
-    if (!previous || capturedAt > previous.capturedAt) {
-      latestBySlot.set(key, { fileName, section, milestone: Number(milestone), capturedAt });
-    }
-  }
-  const sectionOrder = new Map([
-    ["overview", 1],
-    ["microservice-pod-curves", 2],
-    ["database-overviews", 3],
-  ]);
-  const matched = [...latestBySlot.values()].sort(
-    (left, right) =>
-      left.milestone - right.milestone ||
-      (sectionOrder.get(left.section) || 99) - (sectionOrder.get(right.section) || 99) ||
-      left.fileName.localeCompare(right.fileName),
-  );
-  return [...matched.map((entry) => entry.fileName), ...unmatched].map((fileName) =>
-    path.join(dateDir, fileName),
-  );
-}
-
-function parseMonitorScreenshot(filePath) {
-  const fileName = path.basename(filePath);
-  const match = fileName.match(/^monitor-(.+)-T(\d+)-/i);
-  const sectionLabels = new Map([
-    ["overview", "顶部概览"],
-    ["microservice-pod-curves", "微服务与Pod资源曲线图"],
-    ["database-overviews", "数据库Overviews"],
-  ]);
-  if (!match) {
-    return {
-      filePath,
-      milestone: Number.POSITIVE_INFINITY,
-      section: "unknown",
-      label: path.basename(filePath, path.extname(filePath)),
-    };
-  }
-  const [, section, milestone] = match;
-  return {
-    filePath,
-    milestone: Number(milestone),
-    section,
-    label: sectionLabels.get(section) || section,
-  };
-}
-
-function groupMonitorScreenshots(files) {
-  const sectionOrder = new Map([
-    ["overview", 1],
-    ["microservice-pod-curves", 2],
-    ["database-overviews", 3],
-  ]);
-  const groups = new Map();
-  for (const filePath of files) {
-    const entry = parseMonitorScreenshot(filePath);
-    const key = Number.isFinite(entry.milestone) ? entry.milestone : "其他";
-    if (!groups.has(key)) {
-      groups.set(key, []);
-    }
-    groups.get(key).push(entry);
-  }
-  return [...groups.entries()]
-    .sort(([left], [right]) => Number(left) - Number(right))
-    .map(([milestone, entries]) => ({
-      milestone,
-      entries: entries.sort(
-        (left, right) =>
-          (sectionOrder.get(left.section) || 99) -
-            (sectionOrder.get(right.section) || 99) ||
-          left.filePath.localeCompare(right.filePath),
-      ),
-    }));
-}
-
-function renderMonitorScreenshotsSection(files, format, options = {}) {
-  if (!files.length) {
-    return "";
-  }
-  const groups = groupMonitorScreenshots(files);
-  if (format === "markdown") {
-    const lines = [""];
-    groups.forEach((group) => {
-      const title =
-        group.milestone === "其他" ? "其他资源整体使用情况" : `${group.milestone}分钟资源整体使用情况`;
-      lines.push(`## ${title}`);
-      lines.push("");
-      group.entries.forEach((entry) => {
-        lines.push(`![${entry.label}](${entry.filePath})`);
-        lines.push("");
-      });
-      lines.push("");
-    });
-    return lines.join("\n").trimEnd();
-  }
-
-  const lines = [""];
-  groups.forEach((group) => {
-    const title =
-      group.milestone === "其他" ? "其他资源整体使用情况" : `${group.milestone}分钟资源整体使用情况`;
-    lines.push(title);
-    lines.push("");
-    group.entries.forEach((entry) => {
-      lines.push(`${entry.label}：${entry.filePath}`);
-      lines.push("");
-    });
-    lines.push("");
-  });
-  return lines.join("\n").trimEnd();
 }
 
 async function main() {
@@ -300,10 +173,8 @@ async function main() {
 
   const payload = await buildDutyDocumentPayload(parsed, builderArgs);
   if (args.includeMonitorScreenshots) {
-    const screenshots = listMonitorScreenshots(args, date);
-    const section = renderMonitorScreenshotsSection(screenshots, args.format, {
-      embedLocalImages: args.embedLocalMonitorScreenshots,
-    });
+    const screenshots = listMonitorScreenshots(args.monitorScreenshotDir, date);
+    const section = renderMonitorScreenshotsSection(screenshots, args.format);
     if (section) {
       payload.text = `${payload.text.trimEnd()}\n\n${section}`;
     }
@@ -323,7 +194,7 @@ async function main() {
     document: payload,
   };
 
-  if (!args.dryRun) {
+  if (!args.dryRun && !args.skipLocalOutput) {
     fs.mkdirSync(args.outputDir, { recursive: true });
     const bodyPath = path.join(args.outputDir, bodyFileName);
     const metaPath = path.join(args.outputDir, metaFileName);
@@ -337,7 +208,6 @@ async function main() {
           folder_node_id: folderConfig.folder_node_id,
           body_format: args.format,
           monitor_screenshots: payload.monitor_screenshots || [],
-          embed_local_monitor_screenshots: args.embedLocalMonitorScreenshots,
           warnings: payload.warnings,
           stats_cache_file: path.join(args.statsCacheDir, `${date}.json`),
         },
@@ -379,9 +249,6 @@ async function main() {
         "--monitor-screenshot-dir",
         args.monitorScreenshotDir,
       );
-    }
-    if (args.embedLocalMonitorScreenshots) {
-      createArgs.push("--embed-local-monitor-screenshots");
     }
     if (args.dryRun) {
       createArgs.push("--dry-run");

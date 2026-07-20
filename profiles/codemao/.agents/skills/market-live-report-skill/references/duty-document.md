@@ -150,15 +150,28 @@ node scripts/publish_duty_document.js --raw input.txt --stats-cache-dir referenc
 
 资源截图会按 `15/20/30分钟资源整体使用情况` 分组，并在标题后直接写入图片。
 
+发布到钉钉文档时，脚本会先把本地截图上传到同一钉钉目录，再把返回的钉钉文件链接写进 Markdown：
+
+```bash
+node scripts/publish_duty_document.js \
+  --raw input.txt \
+  --stats-cache-dir references/live-stats-cache \
+  --format markdown \
+  --include-monitor-screenshots \
+  --dingtalk-doc \
+  --skip-local-output \
+  --pretty
+```
+
 `--fetch-missing` 会对缺失缓存立即调 API（得到的是当前实时值，仅适合补数，不适合代替定时采集）。
 
 ## 发布到钉钉目录
 
-`publish_duty_document.js` 会生成本地文件：
+不带 `--skip-local-output` 时，`publish_duty_document.js` 会生成本地文件：
 
 - `output/duty-docs/{标题}.txt` — 正文
 - `output/duty-docs/{标题}.md` — `--format markdown` 时的表格正文
-- `output/duty-docs/assets/YYYY-MM-DD/*.png` — 监控看板截图
+- `output/duty-docs/assets/YYYY-MM-DD/*.png` — 监控看板截图；发布钉钉文档时会自动上传并替换为钉钉文件链接
 - `output/duty-docs/{标题}.meta.json` — 目录 node、标题、缓存路径
 
 使用 **钉钉文档 MCP（mcpId=9629）** 自动创建，见 [dingtalk-doc-mcp.md](./dingtalk-doc-mcp.md)。未配置时仍可只生成本地 `output/duty-docs/*.txt` 或 `output/duty-docs/*.md`。

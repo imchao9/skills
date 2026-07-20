@@ -63,7 +63,7 @@ node scripts/collect_live_stats_batch.js --raw input.txt --milestone 15 --cookie
 node scripts/run_with_cookie.js --cookie 'PASTE_COOKIE_VALUE' --pretty
 ```
 
-也可以不传 cookie。脚本会读取本地已保存 cookie 并用今日第一场直播 ID 校验；如果 cookie 过期或不存在，会打开 `https://internal-account.codemao.cn/login`，等你登录成功后自动提取并保存 cookie，再继续采集：
+也可以不传 cookie。脚本会读取本地已保存 cookie 并用今日第一场直播 ID 校验；如果 cookie 过期或不存在，会打开 `https://internal-account.codemao.cn/login`，等你登录成功后自动提取并保存 cookie、关闭浏览器，再继续采集：
 
 ```bash
 node scripts/run_with_cookie.js --pretty
@@ -109,6 +109,12 @@ node scripts/schedule_actual_count_update.js \
 
 `schedule_actual_count_update.js` 同样会在启动时校验 cookie，失效时自动打开浏览器登录；禁用方式同样是 `--no-login-if-expired`。
 
+自动创建新的周 sheet 时，默认会参考 `M6W5` 复制 `A1:G200` 的格式，保持和值班安排模板一致；若实际数据超过模板已有数据行，会继续复用 `M6W5!A2:G5` 的数据行样式铺到后续行。需要临时切换模板时可加：
+
+```bash
+node scripts/write_dingtalk_spreadsheet.js --raw input.txt --auto-sheet --style-template-sheet M6W5 --pretty
+```
+
 同时启动监控看板截图任务：
 
 ```bash
@@ -116,6 +122,7 @@ node scripts/schedule_monitor_dashboard_screenshots.js --raw input.txt --pretty
 ```
 
 该脚本会直接打开 `https://grafana.codemao.cn/d/SpSQKcpMl13/ying-xiao-zhi-bo-overviews?orgId=1&refresh=30s`，并在开播后 15 / 20 / 30 分钟截图到 `output/duty-docs/assets/YYYY-MM-DD/`。每个时间点默认截三张：顶部概览、微服务与 Pod 资源曲线图、数据库 Overviews。
+截图任务结束或初始化失败时，会自动关闭本次打开的浏览器窗口。
 
 截图默认使用每个采集点的绝对时间范围（`from=开播时间`、`to=开播时间+分钟数`），所以补截历史直播时不会误用 Grafana 的 `Last 30 minutes`。如果确实要保留当前看板时间范围，可加 `--current-time-range`。
 
@@ -137,6 +144,12 @@ node scripts/publish_duty_document.js --raw input.txt --format markdown --includ
 
 ```bash
 node scripts/publish_duty_document.js --raw input.txt --dingtalk-doc --pretty
+```
+
+如果同时带 `--include-monitor-screenshots`，脚本会先通过钉钉文档 MCP 上传本地监控截图，再把钉钉文件链接写入在线文档。加 `--skip-local-output` 可不落本地正文和 meta：
+
+```bash
+node scripts/publish_duty_document.js --raw input.txt --format markdown --include-monitor-screenshots --dingtalk-doc --skip-local-output --pretty
 ```
 
 配置说明：[references/dingtalk-doc-mcp.md](./references/dingtalk-doc-mcp.md)。默认目录：`https://alidocs.dingtalk.com/i/nodes/a9E05BDRVQ6AaedDFp9D6klbJ63zgkYA`。

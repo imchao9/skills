@@ -22,6 +22,23 @@
         "mode": "$mode"
       }
     },
+    "get_file_upload_info": {
+      "name": "get_file_upload_info",
+      "args": {
+        "folderId": "$folder_id",
+        "workspaceId": "$workspace_id"
+      }
+    },
+    "commit_uploaded_file": {
+      "name": "commit_uploaded_file",
+      "args": {
+        "name": "$name",
+        "fileSize": "$file_size",
+        "folderId": "$folder_id",
+        "uploadKey": "$upload_key",
+        "workspaceId": "$workspace_id"
+      }
+    },
     "get_document_info": {
       "name": "get_document_info",
       "args": {

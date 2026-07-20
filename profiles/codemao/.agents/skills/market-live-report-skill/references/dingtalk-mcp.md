@@ -9,6 +9,7 @@ This skill is aligned to the real DingTalk spreadsheet MCP schema discovered fro
 - `get_sheet`
 - `update_range`
 - `append_rows`
+- `copy_range`
 
 These names are used by the default adapter in this skill.
 
@@ -41,15 +42,16 @@ The writer uses `sheet_rows_sparse` and `sheet_matrix_sparse`:
 - `append-rows`: append rows to the end of an existing worksheet
 - `update-range`: overwrite a fixed A1 range such as `A1:G5`
 
-## First-version limitation
+## Style behavior
 
-This skill does not attempt to:
+When a new weekly sheet is created, the writer copies the current duty-table style from `M6W5` by default:
 
-- merge cells
-- copy existing cell styles
-- auto-detect section boundaries in the current sheet
+- source range: `A1:G200`
+- destination: `A1` in the new sheet
+- paste type: `formats`
+- data row style range: `A2:G5`; repeated onto later data rows when the new sheet has more rows than the template data block
 
-Those actions depend on whether the target MCP exposes formatting tools. If needed later, add them through a custom adapter after verifying the actual tool schema from `mcporter list <target> --schema`.
+Pass `--style-template-sheet <sheetNameOrId>` to override the source sheet, `--style-data-range <A1Range>` to override the repeated data-row style block, set `DINGTALK_STYLE_TEMPLATE_SHEET` / `DINGTALK_STYLE_DATA_RANGE`, or pass `--no-copy-template-style` to skip format copying.
 
 ## Example local MCP config
 

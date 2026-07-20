@@ -13,7 +13,7 @@ git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git
 当前导入的 upstream commit：
 
 ```text
-3bcd48a5bd8551851e6620022bf2b6a389d1383f
+882508ed31f992fd5212d13d281f287368ccb1cf
 ```
 
 导入时使用根目录 skill 源文件，不使用 upstream 的 `.agents/skills/` 生成态。
@@ -25,13 +25,18 @@ git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git
 - `accept-tech-plan`
 - `cg-gen`
 - `cg-req`
+- `codemao-learning`
 - `codemao-troubleshoot`
 - `crp-deploy`
 - `dingtalk-mcp-reader`
 - `feign-client-example-generator`
 - `java-backend-code-review`
 - `java-backend-knowledge-base`
+- `lingxi-code`
+- `lingxi-plan`
 - `market-live-report-skill`
+
+本次刷新时，CLI 从 upstream 根目录发现 11 个 skill；`cg-gen` 和 `cg-req` 未出现在发现结果中，但现有副本与 lock 条目暂时保留，等待确认是否属于上游删除后再清理。
 
 ## 升级方式
 

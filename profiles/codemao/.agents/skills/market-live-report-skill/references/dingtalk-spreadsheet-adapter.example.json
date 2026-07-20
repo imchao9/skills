@@ -45,6 +45,17 @@
         "values": "$values"
       }
     },
+    "copy_range": {
+      "name": "copy_range",
+      "args": {
+        "nodeId": "$node_id",
+        "sheetId": "$source_sheet_id",
+        "pasteType": "$paste_type",
+        "sourceRange": "$source_range",
+        "targetSheetId": "$target_sheet_id",
+        "destinationRange": "$destination_range"
+      }
+    },
     "insert_dimension": {
       "name": "insert_dimension",
       "args": {

@@ -22,10 +22,13 @@ function parseArgs(argv) {
     dutyDoc: false,
     dutyDocOutputDir: null,
     dutyDocDingtalk: false,
+    dutyDocSkipLocalOutput: false,
     dutyDocTarget: process.env.DINGTALK_DOC_MCP_TARGET || "钉钉文档",
     dutyDocStatsCacheDir: null,
     dutyDocFetchMissing: false,
     dutyDocIncludeResourceSection: false,
+    dutyDocIncludeMonitorScreenshots: false,
+    dutyDocMonitorScreenshotDir: null,
     dutyDocFormat: null,
     liveStreamConfig: null,
     liveStreamCookie: null,
@@ -72,6 +75,10 @@ function parseArgs(argv) {
         args.dutyDoc = true;
         args.dutyDocDingtalk = true;
         break;
+      case "--duty-doc-skip-local-output":
+        args.dutyDoc = true;
+        args.dutyDocSkipLocalOutput = true;
+        break;
       case "--duty-doc-target":
         args.dutyDocTarget = argv[++i];
         break;
@@ -83,6 +90,15 @@ function parseArgs(argv) {
         break;
       case "--duty-doc-include-resource-section":
         args.dutyDocIncludeResourceSection = true;
+        break;
+      case "--duty-doc-include-monitor-screenshots":
+        args.dutyDocIncludeMonitorScreenshots = true;
+        args.dutyDoc = true;
+        break;
+      case "--duty-doc-monitor-screenshot-dir":
+        args.dutyDocMonitorScreenshotDir = argv[++i];
+        args.dutyDocIncludeMonitorScreenshots = true;
+        args.dutyDoc = true;
         break;
       case "--duty-doc-format":
         args.dutyDocFormat = argv[++i];
@@ -217,6 +233,12 @@ function main() {
       if (args.dutyDocIncludeResourceSection) {
         dutyArgs.push("--include-resource-section");
       }
+      if (args.dutyDocIncludeMonitorScreenshots) {
+        dutyArgs.push("--include-monitor-screenshots");
+      }
+      if (args.dutyDocMonitorScreenshotDir) {
+        dutyArgs.push("--monitor-screenshot-dir", args.dutyDocMonitorScreenshotDir);
+      }
       if (args.dutyDocFormat) {
         dutyArgs.push("--format", args.dutyDocFormat);
       }
@@ -228,6 +250,9 @@ function main() {
       }
       if (args.dutyDocDingtalk) {
         dutyArgs.push("--dingtalk-doc", "--doc-target", args.dutyDocTarget);
+      }
+      if (args.dutyDocSkipLocalOutput) {
+        dutyArgs.push("--skip-local-output");
       }
       if (args.dryRun) {
         dutyArgs.push("--dry-run");

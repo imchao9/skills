@@ -17,6 +17,11 @@ const {
   renderArgs,
   findNodeIdDeep,
 } = require("./lib/mcporter");
+const {
+  listMonitorScreenshots,
+  renderMonitorScreenshotsSection,
+} = require("./lib/monitor_screenshots");
+const { uploadFilesToDingtalk } = require("./lib/dingtalk_file_upload");
 
 const DEFAULT_ADAPTER = path.resolve(__dirname, "../references/dingtalk-doc-adapter.example.json");
 const DEFAULT_FOLDER_CONFIG = path.resolve(__dirname, "../references/duty-docs-folder.local.json");
@@ -57,7 +62,7 @@ function parseArgs(argv) {
     format: "markdown",
     includeMonitorScreenshots: false,
     monitorScreenshotDir: path.resolve(__dirname, "../output/duty-docs/assets"),
-    embedLocalMonitorScreenshots: false,
+    uploadMonitorScreenshots: true,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -112,8 +117,8 @@ function parseArgs(argv) {
       case "--include-monitor-screenshots":
         args.includeMonitorScreenshots = true;
         break;
-      case "--embed-local-monitor-screenshots":
-        args.embedLocalMonitorScreenshots = true;
+      case "--no-upload-monitor-screenshots":
+        args.uploadMonitorScreenshots = false;
         break;
       case "--monitor-screenshot-dir":
         args.monitorScreenshotDir = path.resolve(argv[++i]);
@@ -145,137 +150,6 @@ function plainTextToMarkdown(title, body) {
     .map((line) => (line ? `${line}  ` : ""))
     .join("\n");
   return `# ${title}\n\n${markdownBody}\n`;
-}
-
-function listMonitorScreenshots(args, date) {
-  const dateDir = path.join(args.monitorScreenshotDir, date);
-  if (!fs.existsSync(dateDir)) {
-    return [];
-  }
-  const files = fs
-    .readdirSync(dateDir)
-    .filter((fileName) => /\.(png|jpe?g|webp)$/i.test(fileName))
-    .sort();
-  const latestBySlot = new Map();
-  const unmatched = [];
-  for (const fileName of files) {
-    const match = fileName.match(
-      /^monitor-(.+)-T(\d+)-\d{8}-\d{6}-captured-(\d{8}-\d{6})\.(png|jpe?g|webp)$/i,
-    );
-    if (!match) {
-      unmatched.push(fileName);
-      continue;
-    }
-    const [, section, milestone, capturedAt] = match;
-    const key = `${milestone}:${section}`;
-    const previous = latestBySlot.get(key);
-    if (!previous || capturedAt > previous.capturedAt) {
-      latestBySlot.set(key, { fileName, section, milestone: Number(milestone), capturedAt });
-    }
-  }
-  const sectionOrder = new Map([
-    ["overview", 1],
-    ["microservice-pod-curves", 2],
-    ["database-overviews", 3],
-  ]);
-  const matched = [...latestBySlot.values()].sort(
-    (left, right) =>
-      left.milestone - right.milestone ||
-      (sectionOrder.get(left.section) || 99) - (sectionOrder.get(right.section) || 99) ||
-      left.fileName.localeCompare(right.fileName),
-  );
-  return [...matched.map((entry) => entry.fileName), ...unmatched].map((fileName) =>
-    path.join(dateDir, fileName),
-  );
-}
-
-function parseMonitorScreenshot(filePath) {
-  const fileName = path.basename(filePath);
-  const match = fileName.match(/^monitor-(.+)-T(\d+)-/i);
-  const sectionLabels = new Map([
-    ["overview", "顶部概览"],
-    ["microservice-pod-curves", "微服务与Pod资源曲线图"],
-    ["database-overviews", "数据库Overviews"],
-  ]);
-  if (!match) {
-    return {
-      filePath,
-      milestone: Number.POSITIVE_INFINITY,
-      section: "unknown",
-      label: path.basename(filePath, path.extname(filePath)),
-    };
-  }
-  const [, section, milestone] = match;
-  return {
-    filePath,
-    milestone: Number(milestone),
-    section,
-    label: sectionLabels.get(section) || section,
-  };
-}
-
-function groupMonitorScreenshots(files) {
-  const sectionOrder = new Map([
-    ["overview", 1],
-    ["microservice-pod-curves", 2],
-    ["database-overviews", 3],
-  ]);
-  const groups = new Map();
-  for (const filePath of files) {
-    const entry = parseMonitorScreenshot(filePath);
-    const key = Number.isFinite(entry.milestone) ? entry.milestone : "其他";
-    if (!groups.has(key)) {
-      groups.set(key, []);
-    }
-    groups.get(key).push(entry);
-  }
-  return [...groups.entries()]
-    .sort(([left], [right]) => Number(left) - Number(right))
-    .map(([milestone, entries]) => ({
-      milestone,
-      entries: entries.sort(
-        (left, right) =>
-          (sectionOrder.get(left.section) || 99) -
-            (sectionOrder.get(right.section) || 99) ||
-          left.filePath.localeCompare(right.filePath),
-      ),
-    }));
-}
-
-function renderMonitorScreenshotsSection(files, format, options = {}) {
-  if (!files.length) {
-    return "";
-  }
-  const groups = groupMonitorScreenshots(files);
-  if (format === "markdown") {
-    const lines = [""];
-    groups.forEach((group) => {
-      const title =
-        group.milestone === "其他" ? "其他资源整体使用情况" : `${group.milestone}分钟资源整体使用情况`;
-      lines.push(`## ${title}`);
-      lines.push("");
-      group.entries.forEach((entry) => {
-        lines.push(`![${entry.label}](${entry.filePath})`);
-        lines.push("");
-      });
-      lines.push("");
-    });
-    return lines.join("\n").trimEnd();
-  }
-
-  const lines = [""];
-  groups.forEach((group) => {
-    const title =
-      group.milestone === "其他" ? "其他资源整体使用情况" : `${group.milestone}分钟资源整体使用情况`;
-    lines.push(title);
-    lines.push("");
-    group.entries.forEach((entry) => {
-      lines.push(`${entry.label}：${entry.filePath}`);
-      lines.push("");
-    });
-    lines.push("");
-  });
-  return lines.join("\n").trimEnd();
 }
 
 function callAdapterTool(adapter, target, toolKey, context) {
@@ -337,21 +211,49 @@ async function main() {
     },
   });
 
+  const adapter = loadJson(args.adapter);
+  let schemaText = "";
+  if (!args.dryRun) {
+    ensureMcporter();
+    schemaText = mcporterList(args.target);
+    if (!schemaText.includes(adapter.tools.create_document.name)) {
+      throw new Error(
+        `target "${args.target}" does not expose create_document. Configure 钉钉文档 MCP (mcpId=9629). See references/dingtalk-doc-mcp.md`,
+      );
+    }
+    if (
+      args.includeMonitorScreenshots &&
+      args.uploadMonitorScreenshots &&
+      !schemaText.includes(adapter.tools.get_file_upload_info.name)
+    ) {
+      throw new Error(
+        `target "${args.target}" does not expose get_file_upload_info. Configure a DingTalk doc MCP version with file upload support.`,
+      );
+    }
+  }
+
+  let uploadedMonitorScreenshots = [];
   if (args.includeMonitorScreenshots) {
-    const screenshots = listMonitorScreenshots(args, date);
+    const screenshots = listMonitorScreenshots(args.monitorScreenshotDir, date);
+    if (!args.dryRun && args.uploadMonitorScreenshots && screenshots.length) {
+      uploadedMonitorScreenshots = await uploadFilesToDingtalk(adapter, args.target, screenshots, {
+        folderId: folderConfig.folder_node_id,
+      });
+    }
     const section = renderMonitorScreenshotsSection(screenshots, args.format, {
-      embedLocalImages: args.embedLocalMonitorScreenshots,
+      uploaded: uploadedMonitorScreenshots,
     });
     if (section) {
       documentPayload.text = `${documentPayload.text.trimEnd()}\n\n${section}`;
     }
+    documentPayload.monitor_screenshots = screenshots;
+    documentPayload.uploaded_monitor_screenshots = uploadedMonitorScreenshots;
   }
 
   const markdown =
     args.format === "markdown"
       ? `# ${title}\n\n${documentPayload.text}\n`
       : plainTextToMarkdown(title, documentPayload.text);
-  const adapter = loadJson(args.adapter);
   const context = {
     name: title,
     markdown,
@@ -368,6 +270,13 @@ async function main() {
     action: null,
     node_id: null,
     mcp_response: null,
+    monitor_screenshots: documentPayload.monitor_screenshots || [],
+    uploaded_monitor_screenshots: uploadedMonitorScreenshots.map((entry) => ({
+      file_path: entry.file_path,
+      name: entry.name,
+      node_id: entry.node_id,
+      url: entry.url,
+    })),
     warnings: documentPayload.warnings,
   };
 
@@ -376,14 +285,6 @@ async function main() {
     result.markdown_preview = markdown.slice(0, 500);
     process.stdout.write(`${JSON.stringify(result, null, args.pretty ? 2 : 0)}\n`);
     return;
-  }
-
-  ensureMcporter();
-  const schemaText = mcporterList(args.target);
-  if (!schemaText.includes(adapter.tools.create_document.name)) {
-    throw new Error(
-      `target "${args.target}" does not expose create_document. Configure 钉钉文档 MCP (mcpId=9629). See references/dingtalk-doc-mcp.md`,
-    );
   }
 
   let nodeId = null;

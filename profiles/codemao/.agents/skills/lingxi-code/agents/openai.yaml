@@ -1,0 +1,7 @@
+interface:
+  display_name: "灵犀·代码实现"
+  short_description: "基于需求和技术方案实现、修改并验证 Java/Kotlin 后端代码"
+  default_prompt: "使用 $lingxi-code 基于需求、后端技术方案或 RequirementContext 实现并验证 Java/Kotlin 后端代码。"
+
+policy:
+  allow_implicit_invocation: true
