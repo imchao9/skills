@@ -1,6 +1,6 @@
 interface:
   display_name: "Codemao Learning"
-  short_description: "将开发对话整理为可发布的高质量团队学习材料与知识资产"
-  default_prompt: "使用 $codemao-learning 将当前开发对话整理为团队学习材料。"
+  short_description: "将开发对话整理为学习总结与关键过程文档并发布到团队知识库"
+  default_prompt: "使用 $codemao-learning 将当前开发对话整理为学习总结和关键过程文档。"
 policy:
   allow_implicit_invocation: false

@@ -27,7 +27,7 @@
       "sourceUrl": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
       "sourceType": "git",
       "skillPath": "codemao-learning/SKILL.md",
-      "computedHash": "b0bbfeaaaa37efe6fcda56a837782cdd6df8964ebfc669fd7e2d62d36502e242"
+      "computedHash": "3a444f9f54e36b5583c08e26f9037b0c374b8303076926ceb718906be4d738e6"
     },
     "codemao-troubleshoot": {
       "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",

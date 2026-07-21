@@ -12,7 +12,7 @@
 | 与 `profiles/mattpocock-skills` 同名且未列入例外的 skill | `profiles/mattpocock-skills/.agents/skills/<name>` | `follow-after-review`：来源 profile 更新后逐项看 diff，再同步到运行态；禁止整个目录盲目覆盖。 |
 | `ce-compound` | `profiles/experimental/.agents/skills/ce-compound` | `follow-after-review`：实验版本验证通过后再晋级同步。 |
 | `obsidian-vault` | Local maintained fork of `profiles/mattpocock-skills/.agents/skills/obsidian-vault` | `local-fork`：不允许上游覆盖；上游只用于人工 diff；本地版本负责真实 vault 路径、结构保护和 Codex-Memory 规则。 |
-| `accept-tech-plan`、`cg-gen`、`cg-req`、`codemao-learning`、`codemao-troubleshoot`、`crp-deploy`、`dingtalk-mcp-reader`、`feign-client-example-generator`、`java-backend-code-review`、`java-backend-knowledge-base`、`market-live-report-skill` | `git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git`，经 `profiles/codemao` 维护 | `follow-after-review`：先刷新公司 profile、清理 `data/`、`output/` 和缓存等运行产物，再逐项同步到运行态。当前全局安装基于 upstream commit `64a5c38db558820cccd2de87b002ad1fadb82904`。 |
+| `accept-tech-plan`、`cg-gen`、`cg-req`、`codemao-learning`、`codemao-troubleshoot`、`crp-deploy`、`dingtalk-mcp-reader`、`feign-client-example-generator`、`java-backend-code-review`、`java-backend-knowledge-base`、`market-live-report-skill` | `git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git`，经 `profiles/codemao` 维护 | `follow-after-review`：先刷新公司 profile、清理 `data/`、`output/` 和缓存等运行产物，再逐项同步到运行态。`codemao-learning` 已同步到来源 profile 记录的 upstream commit `882508ed31f992fd5212d13d281f287368ccb1cf`；其余全局副本仍基于 `64a5c38db558820cccd2de87b002ad1fadb82904` 或保持各自已审查版本。 |
 
 ## Unresolved provenance
 

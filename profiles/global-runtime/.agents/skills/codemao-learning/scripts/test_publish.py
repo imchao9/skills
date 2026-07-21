@@ -38,6 +38,28 @@ def draft_text(
 
 
 class PublishUnitTests(unittest.TestCase):
+    def test_accepts_process_document_and_calculates_learning_path(self):
+        filename = "2026-07-20-批量导入重复提交保护-过程.md"
+        content = draft_text(
+            title="批量导入重复提交保护-过程",
+            date="2026-07-20",
+            topics=("批量导入重复提交保护",),
+            body=(
+                "## 需求与背景\n\n正文\n\n"
+                "## 技术方案\n\n正文\n\n"
+                "## 关键判断与处理\n\n正文\n"
+            ),
+        )
+
+        metadata = publish.validate_document(filename, content.encode("utf-8"))
+
+        self.assertEqual(metadata["title"], "批量导入重复提交保护-过程")
+        self.assertEqual(metadata["topics"], ["批量导入重复提交保护"])
+        self.assertEqual(
+            publish.target_path("learning", filename),
+            f"learning/2026-07-20/{filename}",
+        )
+
     def test_rejects_invalid_dates_and_non_chinese_topics(self):
         invalid = [
             ("2026-02-30-编程猫.md", draft_text(date="2026-02-30", title="编程猫")),
