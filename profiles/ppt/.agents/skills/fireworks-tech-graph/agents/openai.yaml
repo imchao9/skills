@@ -1,0 +1,6 @@
+interface:
+  display_name: "Fireworks Semantic SVG"
+  short_description: "把已确认技术结构渲染为可回归的语义 SVG"
+  default_prompt: "Use $fireworks-tech-graph to render this approved technical diagram specification as validated semantic SVG."
+policy:
+  allow_implicit_invocation: false

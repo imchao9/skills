@@ -1,0 +1,6 @@
+interface:
+  display_name: "Draw.io Renderer"
+  short_description: "把已确认技术结构渲染为可编辑 draw.io 图"
+  default_prompt: "Use $drawio-skill to render this approved node and edge specification as an editable draw.io diagram."
+policy:
+  allow_implicit_invocation: false

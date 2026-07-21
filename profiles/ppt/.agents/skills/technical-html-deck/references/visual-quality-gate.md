@@ -61,6 +61,17 @@ For slide-style technical HTML, prefer:
 - appendix pages for dense details.
 - screenshots for every slide.
 
+## Fullscreen Contract
+
+Use a `1280x720` logical slide canvas and scale the active slide uniformly into `100vw x 100vh`. Do not present a fixed-size slide as a floating card with unused viewport margins. Preserve aspect ratio with letterboxing only when the viewport is not 16:9; mobile may switch to natural-height scrolling when explicitly designed and verified.
+
+Test at least:
+
+- 1920x1080 desktop;
+- 1280x720 desktop;
+- one narrow mobile viewport;
+- browser zoom or device-pixel-ratio conditions that previously caused clipping.
+
 ## Anti-Ugly Checks
 
 Before calling the deck done, inspect screenshots and fix any of these:
@@ -72,6 +83,8 @@ Before calling the deck done, inspect screenshots and fix any of these:
 - color palette is dominated by one hue without functional accents.
 - text is too tiny, too loose, clipped, or awkwardly wrapped.
 - screenshots prove the page renders but not that it is presentation-worthy.
+- chart bar lengths, sort order, labels, denominators, or time windows imply a comparison the data does not support.
+- the final HTML references assets different from the files used during screenshot QA.
 
 ## QA Report Requirements
 

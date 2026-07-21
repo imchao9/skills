@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "drawio-skill": {
+      "source": "Agents365-ai/drawio-skill",
+      "sourceType": "github",
+      "skillPath": "skills/drawio-skill/SKILL.md",
+      "computedHash": "40d2339f8cf0910343bbb361aab26ed7eb6cc640f9f69a675219b1b7a43e4084"
+    },
+    "fireworks-tech-graph": {
+      "source": "yizhiyanhua-ai/fireworks-tech-graph",
+      "sourceType": "github",
+      "skillPath": "skills/fireworks-tech-graph/SKILL.md",
+      "computedHash": "457d4d875781d7df542b49dbb320b4b4b698a15044b7cfbc75a18048663564d9"
+    }
+  }
+}

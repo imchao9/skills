@@ -9,6 +9,8 @@
 | --- | --- | --- |
 | `agent-reach` | `profiles/web/.agents/skills/agent-reach` | `follow`：先更新正式 profile，再完整同步到运行态；个人触发、重试和时间预算放在 `/Users/cm/.codex/AGENTS.md`，不修改运行副本。 |
 | `technical-html-deck` | `profiles/ppt/.agents/skills/technical-html-deck` | `follow`：正式 profile 验证通过后完整同步。 |
+| `drawio-skill` | `profiles/ppt/.agents/skills/drawio-skill`，上游 `Agents365-ai/drawio-skill` | `follow-after-review`：只作为 `technical-html-deck` 的可编辑技术图 renderer；保持显式触发和本地窄 wrapper。 |
+| `fireworks-tech-graph` | `profiles/ppt/.agents/skills/fireworks-tech-graph`，上游 `yizhiyanhua-ai/fireworks-tech-graph` | `follow-after-review`：只作为 `technical-html-deck` 的语义 SVG renderer；保持显式触发和本地窄 wrapper。 |
 | 与 `profiles/mattpocock-skills` 同名且未列入例外的 skill | `profiles/mattpocock-skills/.agents/skills/<name>` | `follow-after-review`：来源 profile 更新后逐项看 diff，再同步到运行态；禁止整个目录盲目覆盖。 |
 | `ce-compound` | `profiles/experimental/.agents/skills/ce-compound` | `follow-after-review`：实验版本验证通过后再晋级同步。 |
 | `obsidian-vault` | Local maintained fork of `profiles/mattpocock-skills/.agents/skills/obsidian-vault` | `local-fork`：不允许上游覆盖；上游只用于人工 diff；本地版本负责真实 vault 路径、结构保护和 Codex-Memory 规则。 |

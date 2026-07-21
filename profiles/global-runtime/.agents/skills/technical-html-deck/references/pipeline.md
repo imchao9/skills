@@ -53,6 +53,8 @@ Default to static HTML when the deck needs:
 
 Use full-slide image generation only when the page is a visual statement, not the canonical technical record.
 
+Create `diagram_spec.json` for precise diagrams and validate it before rendering. Keep renderer-specific XML, JSON IR, SVG, and PNG as derived artifacts under the same run folder.
+
 ## Verification Pass
 
 Minimum checks:
@@ -69,3 +71,5 @@ Serious technical review checks:
 - claim ledger matches visible claims
 - diagram spec matches rendered diagrams
 - `qa_report.md` lists blockers, fixes, and residual risk
+- derived-data formulas and source windows can reproduce every visible ranking or percentage
+- the audited screenshot and final deck reference the same asset versions
