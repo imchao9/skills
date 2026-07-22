@@ -29,7 +29,7 @@
 `design-an-interface`、`qa`、`request-refactor-plan` 和 `ubiquitous-language` 仍保留在 `profiles/mattpocock-skills` 的上游镜像中，但不进入 `global-runtime`。
 它们位于 matt 上游的 deprecated 分组；如需恢复到运行态，必须重新说明使用场景并人工评估。
 
-`profiles/mattpocock-skills` 当前基于 upstream commit `9603c1c`。
+`profiles/mattpocock-skills` 当前基于 upstream commit `ed37663`。
 除 `obsidian-vault` 本地 fork 外，运行态中与 matt source 同名的 skill 已同步到该来源。
 
 如果一个运行态 skill 不属于上述来源族，先通过 Git 历史和真实来源补充记录，再执行升级。

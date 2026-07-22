@@ -54,7 +54,7 @@
       "source": "everyinc/compound-engineering-plugin",
       "sourceType": "github",
       "skillPath": "skills/ce-compound/SKILL.md",
-      "computedHash": "9d914ebfa6f4dc5d50d9de32a4cd26c82a552acf0714bf3f112df5d5da01e54a"
+      "computedHash": "cf318a7721ee40ba84b38c7cb8bd88f1b248c2d0c69a74d6905f1e745aff80da"
     },
     "draw-ui": {
       "source": "imchao9/skills",
