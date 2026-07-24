@@ -1,0 +1,6 @@
+interface:
+  display_name: "微信视频号下载"
+  short_description: "跨平台解析、下载并验收已授权的视频号内容"
+  default_prompt: "Use $wechat-channels-download to safely resolve, download, and verify an authorized WeChat Channels video on macOS or Windows."
+policy:
+  allow_implicit_invocation: false
