@@ -8,6 +8,9 @@ codex plugin list
 
 采集时间：2026-07-07。
 
+公司内源 marketplace 于 2026-07-24 单独复核；其来源、升级和验证方法见
+[`plugins/cm-tool-marketplace.md`](plugins/cm-tool-marketplace.md)。
+
 ## 已安装并启用
 
 | Plugin | Marketplace | Version | 用途 | 保留判断 |
@@ -22,7 +25,13 @@ codex plugin list
 | `computer-use` | `openai-bundled` | `1.0.857` | 控制本机 Mac 应用 UI | 保留 |
 | `record-and-replay` | `openai-bundled` | `1.0.857` | 录制操作并沉淀为 skill | 保留 |
 | `codex-usage` | `codex-usage-local` | `0.1.33` | Codex usage 采集和状态检查 | 保留 |
-| `codemao-fullstack-workflow` | `codex-usage-local` | `0.1.8` | 公司全栈交付工作流 skill bundle | 保留 |
+| `codemao-fullstack-workflow` | `codex-usage-local` | `0.1.21` | 公司全栈交付工作流 skill bundle | 保留 |
+
+## 公司内源 Marketplace
+
+| Marketplace | Canonical source | 当前纳管插件 | 治理文档 |
+|---|---|---|---|
+| `codex-usage-local` | `git@gitlab.codemao.cn:backend/platform-informatization/tool/cm-tool-marketplace.git` | `codex-usage`、`codemao-fullstack-workflow` | [`cm-tool-marketplace`](plugins/cm-tool-marketplace.md) |
 
 ## 已安装但禁用
 
