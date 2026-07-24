@@ -1,6 +1,6 @@
 ---
 name: wechat-channels-download
-description: Download and verify authorized WeChat Channels videos on macOS, Windows, or Linux with a share link or ltaoo/wx_channels_download. Use when the user asks to 下载微信视频号、保存视频号视频、批量下载视频号作者作品、使用 wx_video_download、通过视频号分享链接或已取得的媒体 URL 下载内容，或排查本地下载器的证书、代理、按钮、任务与输出问题. Require explicit approval before installing a root certificate, changing the system proxy or routes, using sudo/admin privileges, or sending a share URL to an external parser.
+description: 用于解析、下载并校验已获授权的微信视频号内容，支持 macOS、Windows 和 Linux。适用于下载视频号、保存分享链接、检查视频地址及排查 wx_video_download。经用户同意后，可能调用非微信官方第三方服务 https://sph.litao.workers.dev/ 获取临时视频地址，再从微信视频 CDN 下载；完整签名地址不落盘。
 x-provenance: local-candidate
 x-owner: cm
 x-source-note: local safety wrapper around ltaoo/wx_channels_download; no upstream binary or certificate material is bundled
