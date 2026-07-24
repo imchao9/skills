@@ -1,0 +1,103 @@
+{
+  "schema_version": "ai-cr-mvp/v1",
+  "snapshot": {
+    "snapshot_uuid": "d4eb7f5b-7ad0-4a09-9ddd-511234d0bdea",
+    "team": "platform-informatization",
+    "repo_key": "git@gitlab.codemao.cn:backend/platform-informatization/account/account_hub.git",
+    "repo_name": "account_hub",
+    "repo_slug": "account_hub",
+    "target_type": "mr",
+    "mr_iid": 534,
+    "mr_url": "https://gitlab.codemao.cn/backend/platform-informatization/account/account_hub/-/merge_requests/534",
+    "source_branch": "feature/log",
+    "target_branch": "master",
+    "base_sha": "a71ba39ea81397608c2568b0fa28060626edf3a5",
+    "start_sha": "a71ba39ea81397608c2568b0fa28060626edf3a5",
+    "head_sha": "6558af30ae4c3132b9bbb7e12a6e4a33f80e8d15",
+    "branch_review_key": null,
+    "created_at": "2026-07-15T09:22:46.452149+00:00",
+    "report_url": null
+  },
+  "summary": {
+    "issue_total": 3,
+    "severity_counts": {
+      "P0": 1,
+      "P1": 2,
+      "P2": 0,
+      "P3": 0
+    },
+    "inline_comment_severities": [
+      "P0",
+      "P1"
+    ],
+    "status_counts": {
+      "open": 3
+    }
+  },
+  "findings": [
+    {
+      "snapshot_uuid": "d4eb7f5b-7ad0-4a09-9ddd-511234d0bdea",
+      "issue_no": "Issue-1",
+      "finding_key": "01c7b8d4e74e3823",
+      "team": "platform-informatization",
+      "repo_key": "git@gitlab.codemao.cn:backend/platform-informatization/account/account_hub.git",
+      "mr_iid": 534,
+      "severity": "P0",
+      "category": "concurrency-data-safety",
+      "rule_id": "CONC-001",
+      "title": "注销状态校验与删除未原子化，撤销后仍可能被注销",
+      "file": "accounthub-service/src/main/java/cn/codemao/service/platform/accounthub/hub/facade/impl/JAccountFacadeImpl.java",
+      "line": 861,
+      "evidence": "accelerateCloseAccount 先查询申请并确认 state=DEALING，随后才调用 closeWork；期间没有条件更新、行锁或分布式锁。方法上的 synchronized 只锁当前 JAccountFacadeImpl 实例，既不覆盖 revokeCloseAccountApply/revokeCloseAccountApplyByUser，也不跨服务实例。定时任务 closeAccountJob 同样会读取 DEALING 后直接调用 closeWork。",
+      "impact": "如果用户撤销与后台加速请求并发，撤销线程可先把申请改为 REVOKE 并恢复账号，已通过旧状态校验的加速线程仍会解绑认证、清理 ES/OAuth、关闭账号并最终把申请覆盖成 CLOSE。多实例或定时任务并发还会重复执行注销、MQ 和日志副作用，属于真实的数据删除风险。",
+      "recommendation": "在执行任何注销副作用前，用数据库条件更新原子抢占申请，例如 UPDATE ... SET state=PROCESSING WHERE id=? AND state=DEALING，并以 affectedRows=1 作为唯一执行资格；撤销也必须通过互斥的条件状态迁移。PROCESSING 状态下再执行幂等注销流程，并为失败状态和人工恢复提供明确路径。不要用 JVM synchronized 代替跨实例状态机。",
+      "status": "open",
+      "discussion_id": null,
+      "discussion_url": null
+    },
+    {
+      "snapshot_uuid": "d4eb7f5b-7ad0-4a09-9ddd-511234d0bdea",
+      "issue_no": "Issue-2",
+      "finding_key": "20c38b9a8853e4d5",
+      "team": "platform-informatization",
+      "repo_key": "git@gitlab.codemao.cn:backend/platform-informatization/account/account_hub.git",
+      "mr_iid": 534,
+      "severity": "P1",
+      "category": "data-consistency",
+      "rule_id": "CONSISTENCY-001",
+      "title": "复用 closeWork 缺少失败状态与幂等恢复",
+      "file": "accounthub-service/src/main/java/cn/codemao/service/platform/accounthub/hub/facade/impl/JAccountFacadeImpl.java",
+      "line": 872,
+      "evidence": "新 RPC 直接调用 closeWork。closeWork 会依次解绑手机号/邮箱/OAuth、关闭账号、撤销 token、发送 MQ、清理 ES，最后才 updateById 将申请改为 CLOSE；这些跨 MySQL、ES、RPC、MQ 的步骤没有统一事务、执行进度或幂等键，任一步抛异常都会让申请继续保持 DEALING。",
+      "impact": "调用方收到失败后重试会再次执行已经成功的前半段；账号可能处于认证已解绑但状态未关闭、主库已关闭但 ES 未清理、MQ 重复发送等部分注销状态。定时任务之后还会继续重试这条 DEALING 申请，扩大不一致。",
+      "recommendation": "先通过原子状态迁移记录 PROCESSING，再把各删除步骤设计为可重复执行，并记录步骤结果或使用可靠事件/outbox；失败时落明确 FAILED/RETRY 状态，由补偿任务继续，而不是重新从 DEALING 无条件执行整条流程。完成全部关键步骤后再条件更新为 CLOSE。",
+      "status": "open",
+      "discussion_id": null,
+      "discussion_url": null
+    },
+    {
+      "snapshot_uuid": "d4eb7f5b-7ad0-4a09-9ddd-511234d0bdea",
+      "issue_no": "Issue-3",
+      "finding_key": "6737b5794e56563b",
+      "team": "platform-informatization",
+      "repo_key": "git@gitlab.codemao.cn:backend/platform-informatization/account/account_hub.git",
+      "mr_iid": 534,
+      "severity": "P1",
+      "category": "audit-reliability",
+      "rule_id": "AUDIT-001",
+      "title": "管理日志失败被吞掉，注销仍返回成功",
+      "file": "accounthub-service/src/main/java/cn/codemao/service/platform/accounthub/hub/facade/impl/JAccountFacadeImpl.java",
+      "line": 885,
+      "evidence": "账号注销完成后才调用 recordAccelerateCloseAccountManagementLog；该方法捕获所有 Exception，只打印错误并继续返回 accelerated=true。管理日志保存没有重试、补偿或可靠事件。",
+      "impact": "这是后台主动提前执行的不可逆账号注销。如果日志服务短暂故障，账号已经被删除但操作人、来源和状态变更记录永久缺失，无法满足 MR 描述中的管理操作留痕，也会破坏后续审计与责任追溯。",
+      "recommendation": "将操作意图和操作者信息在原子抢占申请时持久化，或写入可重试的 outbox/审计任务；只有审计事件被可靠接收后才报告完整成功。至少不要静默吞掉失败，应落可检索的失败记录并触发补偿重试。",
+      "status": "open",
+      "discussion_id": null,
+      "discussion_url": null
+    }
+  ],
+  "blind_spots": [
+    "数据库MCP状态: 离线（脚本未集成数据库 MCP，仅提供静态上下文）。",
+    "命中空值风险专项规则，review 时应额外读取 references/nullability-gotchas.md。"
+  ]
+}

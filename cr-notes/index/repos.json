@@ -1,0 +1,16 @@
+{
+  "git@gitlab.codemao.cn:backend/platform-informatization/account/account_hub.git": {
+    "repo_key": "git@gitlab.codemao.cn:backend/platform-informatization/account/account_hub.git",
+    "repo_name": "account_hub",
+    "repo_slug": "account_hub",
+    "team": "platform-informatization",
+    "updated_at": "2026-07-15T08:44:30.401399+00:00"
+  },
+  "git@gitlab.codemao.cn:backend/platform-informatization/internal-service/platform-informatization-manage-system.git": {
+    "repo_key": "git@gitlab.codemao.cn:backend/platform-informatization/internal-service/platform-informatization-manage-system.git",
+    "repo_name": "platform-informatization-manage-system",
+    "repo_slug": "platform-informatization-manage-system",
+    "team": "platform-informatization",
+    "updated_at": "2026-07-15T08:59:43.001810+00:00"
+  }
+}
