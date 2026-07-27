@@ -43,6 +43,25 @@ Push too little down and the top bloats; push too much and you hide material the
 
 Where the ladder decides _how far down_ a piece sits, **co-location** decides _what sits beside it_ once there: keep a concept's definition, rules, and caveats under one heading rather than scattered, so reading one part brings its neighbours with it.
 
+## Automation boundary
+
+Before turning a workflow into a skill, make a **determinism map**:
+
+- **Mechanical steps** have observable contracts: exit status, schema, count, probe, hash, manifest, or remote byte check.
+- **Judgment steps** require semantic, visual, exception, trade-off, or risk decisions.
+- **Side effects** change external systems and need explicit gates appropriate to their risk.
+
+Use that map to choose the cheapest reliable execution shape:
+
+- Execute a simple one-off directly. A permanent script that costs more to build and verify than the task saves is negative automation.
+- When the automation shape is uncertain, start with a **tracer script**: the smallest disposable script that runs one representative real input through the critical path and emits a checkable artifact plus timing and failure evidence. Timebox it; omit generalization, concurrency, broad configuration, and framework code. Expand only after the trace beats direct execution on output quality and end-to-end economics: add resumability and deterministic validation first, batching or parallelism second, and promote to a runbook or skill only after repeated reuse.
+- For a one-off that is long-running, batch-heavy, interruption-prone, or expensive to restart, use a task-local resumable script or state file after the real inputs and contracts are known. Do not promote it merely because it exists.
+- After the same shape succeeds 2–3 times and its inputs and outputs stabilize, move mechanical steps into a tested repository script and record the procedure as a runbook. Promote it to a skill only after the workflow stays stable and its invocation boundary is clear enough to justify context and maintenance load.
+- Keep AI at bounded judgment gates. Feed it review artifacts and require a structured decision file; let deterministic work run continuously before and after the gate.
+- Trigger a final AI review only for artifacts whose pixels, semantics, or risk changed after the main review. Bind approval to fingerprints so stale approval cannot pass.
+
+Judge the design by end-to-end economics: time to first usable output, wall-clock time, AI-active time, resume cost, and delivered quality. Fewer model turns are not a win when setup time or quality loss is larger.
+
 ## When to split
 
 **Granularity** is how finely you divide skills, and each cut spends one of the two loads, so split only when the cut earns it. Two cuts:
