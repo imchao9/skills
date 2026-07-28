@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenClaw Install Routing"
+  short_description: "选择认证、模型和 zstd 安装路线"
+  default_prompt: "Use $openclaw-install-routing to select the safest install route for this Mac."

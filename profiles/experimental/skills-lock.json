@@ -84,6 +84,11 @@
       "skillPath": "profiles/experimental/.agents/skills/huashu-design/SKILL.md",
       "computedHash": "526877a25f05d0b24d5b1a86413595b196e12affb83be7c50992f90d63596c76"
     },
+    "install-codex-auth-sync": {
+      "source": "/Users/cm/Documents/Me/Project/01_active-repos/codex_config_update/packaging/cliproxy-local/skills/install-codex-auth-sync",
+      "sourceType": "local",
+      "computedHash": "3e9acafd43e05f9fe9c5af5d124a348ea646d1079c4f845fcdd9967c6ea64f22"
+    },
     "review": {
       "source": "imchao9/skills",
       "ref": "main",

@@ -1,0 +1,24 @@
+{
+  "route": "matrixrouter",
+  "credentials": {
+    "matrixrouter_openai": "present",
+    "matrixrouter_anthropic": "present",
+    "auth_sync_code_present": "absent",
+    "auth_sync_approved": "no"
+  },
+  "components": {
+    "base": true,
+    "openclaw": true,
+    "codex_cli": true,
+    "secrets": true,
+    "clash_party": true,
+    "auth_sync": false,
+    "extras": false,
+    "office_skills": false,
+    "validate": true
+  },
+  "models": {
+    "codex": "gpt-5.6-sol",
+    "openclaw": "claude-opus-4-8"
+  }
+}

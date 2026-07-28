@@ -1,0 +1,4 @@
+interface:
+  display_name: "小红书整理到 Obsidian"
+  short_description: "通过 OpenCLI 可续跑地同步小红书到 Obsidian"
+  default_prompt: "Use $xiaohongshu-obsidian to sync my authorized Xiaohongshu saved and liked notes into an existing Obsidian vault through OpenCLI."
