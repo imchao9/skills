@@ -88,6 +88,10 @@ Label extra period columns as `OT1`, `OT2`, but avoid claiming the regulation ga
 
 - Start with a strong title containing the winner, score, and main story.
 - The body should combine data and narrative.
+- In Chinese prose, always put attempts before makes and include an explicit
+  action word: write `78投19中`, `22投3中`, or `30次罚球命中12球`. Never
+  convert a box-score `命中/出手` value such as `19/78` into `19中78`.
+  Slash-form tables must label their order explicitly as `命中/出手`.
 - Mention both teams with respect, especially when the losing side has clear leaders or late-game resistance.
 - Avoid only listing numbers.
 Turn the numbers into a game story: scoring distribution, rebounding edge, turnovers, shooting efficiency, rotation depth, key players, and next-match outlook.

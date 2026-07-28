@@ -11,6 +11,7 @@ x-source-note: created from local basketball highlight workflow
 ## Core Workflow
 
 1. Inventory clips before editing. Parse team, jersey number, player, event type, period, clock/timestamp, source path, and duration into a JSON plan.
+   Stop with an actionable error when no clip matches the filename contract or the requested team has no parsed clips.
 2. Filter to the requested team first. Keep opponent clips out unless the user explicitly asks for both teams.
 3. Exclude unusable clips early: missing scoreboard, pause screens, duplicate replays, wrong team, or stale quarter-transition frames.
 4. De-duplicate same-possession clips with a small clock window. Prefer made shots, then blocks/steals, then assists; apply a player bonus when the user asks for more of one player.
@@ -18,6 +19,8 @@ x-source-note: created from local basketball highlight workflow
 6. Trim tails when clips feel slow. The common setting from this project is `--trim-tail-seconds 8`.
 7. Build a new output file. Never overwrite a previous accepted cut unless the user explicitly asks.
 8. Validate with `ffprobe`, extracted frames around suspicious timestamps, and a count of clips/player distribution when relevant.
+
+The build gate passes when the plan contains at least one intended clip, the concat list count matches the plan, the output fully decodes, and reviewed frames preserve the scoreboard and readable labels.
 
 ## Preferred Script
 

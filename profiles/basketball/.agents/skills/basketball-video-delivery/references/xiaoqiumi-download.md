@@ -1,41 +1,36 @@
 # Xiaoqiumi replay acquisition
 
-## Confirmed web flow
+## Preferred public path
 
-Basketball match video pages use:
+The H5 competition and match pages expose basketball data through `https://api.xiaoqiumi.co/api`.
+Resolve a match ID with `Basketball/Match/MatchInfo`, then read every `Basketball/Match/MatchDetail` tab.
+The `集锦` tab contains the replay and labeled event media needed by the editing workflow.
 
-```text
-POST Basketball/Match/MatchVideoList?matchID=<id>
-```
+Use the companion `$xiaoqiumi-match-review` fetcher when available so the raw responses and normalized event table share one source of truth.
+Enumerate every replay candidate after checking title, duration, author, creation time, resolution, and thumbnail.
+Treat near-identical long recordings from the same author created within five minutes as duplicate variants and retain the longer one.
+Retain distinct long recordings and same-author short continuation segments in chronological order.
+Treat short official highlights and entries whose `subName` is `个人集锦` as event media, not as the full replay.
 
-Each response item contains metadata such as `video_type`, `title`, `play_time`, and `file_url`.
-The UI separates `集锦` (`video_type=0`) from `回放` (`video_type=1`).
-For long files, its download link normalizes the URL scheme and appends:
+## Authenticated fallback
 
-```text
-?download_name=<sanitized-title>.mp4
-```
-
-The endpoint and authentication scheme may change.
-Re-inspect live network traffic instead of hardcoding an API host, authorization header, or signed URL.
-
-## Authentication boundary
-
-The management page redirects unauthenticated sessions to `#/SignIn`.
-Prefer an existing authenticated browser profile.
-If authentication is absent, pause and ask the user to log in manually.
-Never print, persist, or copy cookies and authorization headers into project files.
+When the public response lacks a playable URL or returns an access error, open the supplied `MatchVideoList` page with an existing authenticated browser profile.
+Capture the successful `Basketball/Match/MatchVideoList?matchID=<id>` response and apply the same all-candidate selection contract to `video_type=1` items.
+If the management page redirects to `#/SignIn`, ask the user to log in manually.
+Keep cookies and authorization headers in memory only.
 
 ## Download procedure
 
-1. Open the supplied `MatchVideoList` page in an authenticated browser.
-2. Capture XHR/fetch traffic before refreshing the video list.
-3. Identify the successful `Basketball/Match/MatchVideoList` response for the requested match ID.
-4. Select the longest `video_type=1` item as the full replay only after checking title and duration.
-5. Pass the current URL through stdin or an environment variable to the bundled downloader; never place it in a report or shell history.
-6. Confirm HTTP completion and content length.
-7. Let the downloader rename `.part` to `.mp4` atomically.
-8. Verify duration, streams, resolution, and decode a short sample.
+1. Resolve and save sanitized match metadata without URL query parameters.
+2. Write `replay-selection.json` with every candidate, selected segment, and exclusion decision.
+3. Pass each selected segment's current URL through stdin or an environment variable to the bundled downloader.
+4. Stream each segment to a `.part` file and rename atomically after HTTP completion.
+5. Assemble multiple segments chronologically. Stream-copy matching formats; normalize only incompatible formats.
+6. Download labeled events with their original titles, replacing only characters invalid on the local filesystem.
+7. Record expected and completed event counts.
+8. Verify every segment and the assembled replay duration, streams, resolution, content length, and a decoded sample.
+
+For normal deliveries, let `fast_start_delivery.py` execute steps 1-7 and consume its sanitized report instead of waiting for AI between commands.
 
 ```bash
 export XQM_DOWNLOAD_URL='<current in-memory file_url>'
@@ -48,12 +43,13 @@ unset XQM_DOWNLOAD_URL
 Prefer `--url-stdin` when another process can pipe the URL directly.
 Reports retain only scheme, host, and path; query parameters are removed.
 
-For labeled clips, preserve the page title exactly except characters invalid on the local filesystem.
+The phase is complete only when the match report exists, replay validation succeeds, downloaded event count matches the report, and no active `.part` remains.
 
 ## Failure handling
 
-- Redirect to SignIn: user login required.
+- Public response has no media: inspect all `MatchDetail` tabs before using the authenticated fallback.
+- Redirect to SignIn on the fallback: user login required.
 - Expired file URL or 403: refresh the list and reacquire `file_url`; do not retry the stale URL forever.
-- Multiple replays: choose by title, duration, and visible content rather than size alone.
+- Multiple replays: never silently choose only the longest item. Distinguish duplicate long variants, chronological recording segments, pre-game tests, and official highlights; retain an explicit selection manifest.
 - Browser blob download fails on a large file: use the authenticated request URL with a streaming downloader while retaining required browser authorization in memory only.
 - Interrupted transfer: retain `.part`; resume only if the server supports byte ranges, otherwise restart that file.

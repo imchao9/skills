@@ -17,7 +17,7 @@ EVENT_PATTERN = re.compile(
     r"(?P<player>.+?)\s+"
     r"(?P<event>2分命中|3分命中|助攻|抢断|盖帽)\s+"
     r"(?P<period>第一节|第二节|第三节|第四节|加时\d+)\s+"
-    r"(?P<minute>\d{2})_(?P<second>\d{2})\.mp4$"
+    r"(?P<minute>\d{2})[_:](?P<second>\d{2})\.mp4$"
 )
 
 EVENT_WEIGHTS = {"3分命中": 7, "2分命中": 6, "盖帽": 5, "抢断": 5, "助攻": 4}
@@ -62,8 +62,15 @@ def main() -> None:
 
     root = Path(args.root).resolve()
     clips = discover(root, args.clip_dir or ["个人集锦"])
+    if not clips:
+        raise SystemExit(
+            "no event clips matched the filename contract; expected a name ending in "
+            "'<节次> MM:SS.mp4' or '<节次> MM_SS.mp4'"
+        )
     if args.team:
         clips = [clip for clip in clips if clip.team == args.team]
+        if not clips:
+            raise SystemExit(f"no parsed clips found for team: {args.team}")
     if args.exclude_file:
         clips = exclude(clips, root / args.exclude_file)
     clips = dedupe(clips, args.dedupe_window_seconds, args.priority_player)

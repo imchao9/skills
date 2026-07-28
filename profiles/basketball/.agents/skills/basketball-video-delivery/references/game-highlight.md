@@ -6,11 +6,24 @@ It tells the story of the whole game, so it must include both teams and preserve
 ## Default build
 
 Use the accepted `reports/matches.csv` from `$basketball-player-clips` as the event timeline.
+When the local pipeline produced separate `matches.csv` and
+`rendered-matches.csv` files, normalize the rendered table first:
+
+```bash
+python3 "$SKILL_DIR/scripts/prepare_game_highlight_matches.py" \
+  --input output/player-clips-front15/reports/rendered-matches.csv \
+  --output output/game-highlight/matches-for-game-highlight.csv
+```
+
+Use `--team-map OLD=NEW` when an old event title contains a stale team name.
+The normalized file adds the deterministic duration and quality columns required
+by the condensed-reel builder without re-running video recognition.
+
 Run:
 
 ```bash
 python3 "$PLAYER_CLIPS_SKILL/scripts/make_condensed_reel.py" \
-  --matches-csv output/player-clips-front15/reports/matches.csv \
+  --matches-csv output/game-highlight/matches-for-game-highlight.csv \
   --output output/game-highlight/比赛精彩集锦_精选8-10分钟.mp4 \
   --min-seconds 480 \
   --target-seconds 520 \
@@ -55,10 +68,31 @@ Statistics are limited to labeled points, assists, steals, and blocks; never inv
 
 ```bash
 uv run --with Pillow python3 "$SKILL_DIR/scripts/render_game_highlight_labels.py" \
-  --matches-csv output/player-clips-front15/reports/matches.csv \
+  --matches-csv output/game-highlight/matches-for-game-highlight.csv \
   --selection-csv output/game-highlight/比赛精彩集锦_精选8-10分钟_selection.csv \
+  --match-json output/match.json \
   --output output/game-highlight/比赛精彩集锦_精选8-10分钟_数据标注版.mp4
 ```
 
 Inspect frames from at least one scoring event and one assist event.
 Confirm the card does not cover the bottom scoreboard and remains readable on both light and dark footage.
+When normalized match JSON is available, pass it with `--match-json` so the card
+uses official full-game points, rebounds, assists, steals, and blocks. Without
+it, the card explicitly says `已标记` rather than presenting labeled-event
+counts as official full-game totals.
+
+## Resolution gate
+
+Deliver the final viewer-facing reel at exactly 1920×1080. If the labeled reel
+is still 1280×720 because the accepted source was 720p, upscale the final reel
+once with Lanczos and validate the temporary output before replacing the local
+deliverable:
+
+```bash
+ffmpeg -y -i "$LABELED_REEL" \
+  -vf "scale=1920:1080:flags=lanczos" \
+  -c:v libx264 -preset fast -crf 19 -pix_fmt yuv420p \
+  -c:a copy -movflags +faststart "$TEMP_1080P"
+```
+
+Do not upscale native 1080p inputs or claim that upscaling adds source detail.

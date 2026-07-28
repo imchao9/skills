@@ -5,19 +5,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path, PurePosixPath
 
 
-def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+UPLOAD_FAILURE_MARKERS = ("以下文件上传失败", "上传文件失败", "上传失败")
+INVALID_REMOTE_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def run(
+    args: list[str], *, failure_markers: tuple[str, ...] = ()
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(args, text=True, capture_output=True)
-    if result.returncode:
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    matched_marker = next((marker for marker in failure_markers if marker in output), None)
+    if result.returncode or matched_marker:
         detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f"command failed ({result.returncode}): {args[0]} {args[1]}\n{detail}")
+        reason = f"exit {result.returncode}" if result.returncode else f"reported failure: {matched_marker}"
+        raise RuntimeError(f"command failed ({reason}): {shlex.join(args[:2])}\n{detail}")
     return result
 
 
@@ -34,6 +46,21 @@ def probe(path: Path) -> dict:
 
 def remote_join(root: str, name: str) -> str:
     return str(PurePosixPath("/") / root.lstrip("/") / name)
+
+
+def safe_remote_name(name: str) -> str:
+    """Return a Baidu-compatible basename without changing the local source."""
+    sanitized = INVALID_REMOTE_CHARS.sub("_", name).rstrip(" .")
+    if sanitized in ("", ".", ".."):
+        raise ValueError(f"filename becomes empty after remote sanitization: {name!r}")
+    return sanitized
+
+
+def ensure_unique_remote_names(items: list[dict], target: str) -> None:
+    remote_names = [str(item["remote_name"]) for item in items]
+    collisions = sorted({name for name in remote_names if remote_names.count(name) > 1})
+    if collisions:
+        raise ValueError(f"remote filename collision in {target}: {collisions}")
 
 
 def mp4_files(directory: Path | None) -> list[Path]:
@@ -58,6 +85,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--team-highlight", type=Path, action="append", default=[])
     parser.add_argument("--game-highlight", type=Path, action="append", default=[])
     parser.add_argument("--highlight", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--attachment",
+        type=Path,
+        action="append",
+        default=[],
+        help="Explicit non-video file uploaded to the match root (for example commentary MD/HTML/PNG).",
+    )
     parser.add_argument("--cli", default=str(Path.home() / ".local/bin/BaiduPCS-Go"))
     parser.add_argument("--policy", choices=["skip", "rsync", "overwrite"], default="skip")
     parser.add_argument("--settle-seconds", type=int, default=60)
@@ -79,6 +113,7 @@ def main() -> int:
     events = mp4_files(args.events_dir)
     team_highlights = [path.resolve() for path in args.team_highlight]
     game_highlights = [path.resolve() for path in [*args.game_highlight, *args.highlight]]
+    attachments = [path.resolve() for path in args.attachment]
     if personal:
         groups.append(("personal", remote_join(args.target, "个人精彩集锦"), personal))
     if events:
@@ -87,6 +122,8 @@ def main() -> int:
         groups.append(("team_highlights", remote_join(args.target, "球队精彩集锦"), team_highlights))
     if game_highlights:
         groups.append(("game_highlights", remote_join(args.target, "比赛精彩集锦"), game_highlights))
+    if attachments:
+        groups.append(("attachments", args.target, attachments))
     if not groups:
         raise SystemExit("no deliverables selected")
 
@@ -97,25 +134,38 @@ def main() -> int:
         if args.settle_seconds > 0 and time.time() - path.stat().st_mtime < args.settle_seconds:
             raise SystemExit(f"file may still be changing: {path}")
 
-    media = {str(path): probe(path) for path in files}
+    media = {
+        str(path): probe(path)
+        for path in files
+        if path.suffix.lower() == ".mp4"
+    }
     items = [
         {
             "category": category,
             "local": str(path),
             "name": path.name,
-            "bytes": int(media[str(path)]["format"]["size"]),
-            "remote": remote_join(target, path.name),
+            "remote_name": safe_remote_name(path.name),
+            "bytes": (
+                int(media[str(path)]["format"]["size"])
+                if str(path) in media
+                else path.stat().st_size
+            ),
+            "remote": remote_join(target, safe_remote_name(path.name)),
             "status": "planned",
         }
         for category, target, paths in groups
         for path in paths
     ]
+    for category, target, _ in groups:
+        selected = [item for item in items if item["category"] == category]
+        ensure_unique_remote_names(selected, target)
     plan = {
         "status": "running" if args.execute else "planned",
         "mode": "execute" if args.execute else "dry-run",
         "target": args.target,
         "policy": args.policy,
         "local_bytes": sum(item["bytes"] for item in items),
+        "remote_renamed_count": sum(item["name"] != item["remote_name"] for item in items),
         "counts": {category: len(paths) for category, _, paths in groups},
         "items": items,
     }
@@ -125,20 +175,40 @@ def main() -> int:
         who = run([cli, "who"])
         if "uid: 0" in who.stdout or "用户名: ," in who.stdout:
             raise SystemExit("BaiduPCS-Go is not logged in")
-        for category, target, paths in groups:
-            run([cli, "upload", *map(str, paths), target, "--policy", args.policy])
-            selected = [item for item in items if item["category"] == category]
-            meta = run([cli, "meta", *[item["remote"] for item in selected]]).stdout
-            mismatches = [
-                item["name"]
-                for item in selected
-                if item["remote"] not in meta or str(item["bytes"]) not in meta
-            ]
-            if mismatches:
-                raise RuntimeError(f"remote verification failed for {category}: {mismatches}")
-            for item in selected:
-                item["status"] = "verified"
-            save_report(args.report, plan)
+        stage_parent = args.report.resolve().parent if args.report else Path.cwd()
+        stage_parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".baidu-upload-", dir=stage_parent) as temporary:
+            staging_root = Path(temporary)
+            for group_index, (category, target, paths) in enumerate(groups):
+                selected = [item for item in items if item["category"] == category]
+                staging_dir = staging_root / f"{group_index:02d}-{category}"
+                staging_dir.mkdir()
+                upload_paths: list[Path] = []
+                for path, item in zip(paths, selected, strict=True):
+                    staged = staging_dir / item["remote_name"]
+                    try:
+                        os.link(path, staged)
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"cannot stage remote-safe filename for {path}; "
+                            "place the report on the same filesystem as the deliverables"
+                        ) from exc
+                    upload_paths.append(staged)
+                run(
+                    [cli, "upload", *map(str, upload_paths), target, "--policy", args.policy],
+                    failure_markers=UPLOAD_FAILURE_MARKERS,
+                )
+                meta = run([cli, "meta", *[item["remote"] for item in selected]]).stdout
+                mismatches = [
+                    item["remote_name"]
+                    for item in selected
+                    if item["remote"] not in meta or str(item["bytes"]) not in meta
+                ]
+                if mismatches:
+                    raise RuntimeError(f"remote verification failed for {category}: {mismatches}")
+                for item in selected:
+                    item["status"] = "verified"
+                save_report(args.report, plan)
         plan["status"] = "complete"
         plan["remote_bytes_verified"] = plan["local_bytes"]
         save_report(args.report, plan)

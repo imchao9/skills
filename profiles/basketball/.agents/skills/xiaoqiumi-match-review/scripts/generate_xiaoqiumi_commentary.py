@@ -21,8 +21,10 @@ def fmt_player(player: dict[str, Any], detail: bool = False) -> str:
 def team_line(team_name: str, stats: dict[str, Any]) -> str:
     return (
         f"{team_name}全场拿下{stats.get('totalBoards', 0)}个篮板、送出{stats.get('assists', 0)}次助攻，"
-        f"投篮{stats.get('shootNum', 0)}/{stats.get('shots', 0)}，三分{stats.get('threeShotNum', 0)}/{stats.get('threeShots', 0)}，"
-        f"罚球{stats.get('freeThrowNum', 0)}/{stats.get('freeThrows', 0)}，同时有{stats.get('steals', 0)}次抢断和{stats.get('error', 0)}次失误。"
+        f"投篮{stats.get('shots', 0)}投{stats.get('shootNum', 0)}中，"
+        f"三分{stats.get('threeShots', 0)}投{stats.get('threeShotNum', 0)}中，"
+        f"罚球{stats.get('freeThrows', 0)}罚{stats.get('freeThrowNum', 0)}中，"
+        f"同时有{stats.get('steals', 0)}次抢断和{stats.get('error', 0)}次失误。"
     )
 
 

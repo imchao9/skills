@@ -5,7 +5,7 @@
 Default pattern:
 
 ```text
-风暴队 30号 李天驰 2分命中 第三节 20_49.mp4
+风暴队 30号 李天驰 2分命中 第三节 20:49.mp4
 ```
 
 Fields:
@@ -15,7 +15,10 @@ Fields:
 - player: `李天驰`
 - event: `2分命中`, `3分命中`, `助攻`, `抢断`, or `盖帽`
 - period: `第一节`, `第二节`, `第三节`, `第四节`, `加时1`
-- timestamp: `20_49`
+- timestamp: `20:49` or the filesystem-safe equivalent `20_49`
+
+The parser accepts both separators and normalizes the plan clock to `MM:SS`.
+If source MP4 files exist but none match this contract, stop instead of producing an empty successful plan.
 
 Treat timestamps as approximate labels, not guaranteed scoreboard order.
 

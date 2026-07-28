@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
+import mimetypes
 import re
 import shutil
 import urllib.parse
@@ -20,15 +22,19 @@ def esc(value: Any) -> str:
     return html.escape("" if value is None else str(value))
 
 
-def asset_url(path: str | None, out_dir: Path) -> str:
+def asset_url(path: str | None, out_dir: Path, embed: bool = False) -> str:
     if not path:
         return ""
     source = Path(path).expanduser().resolve()
     if not source.exists():
         raise SystemExit(f"Asset does not exist: {source}")
+    if embed:
+        media_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+        payload = base64.b64encode(source.read_bytes()).decode("ascii")
+        return f"data:{media_type};base64,{payload}"
     assets_dir = out_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
-    target = assets_dir / source.name
+    target = (assets_dir / source.name).resolve()
     if source != target:
         shutil.copy2(source, target)
     return urllib.parse.quote(f"assets/{target.name}")
@@ -50,7 +56,64 @@ def stats_text(team: str, stats: dict[str, Any]) -> str:
     return f"{team} 篮板{stats.get('totalBoards', 0)} 助攻{stats.get('assists', 0)} 抢断{stats.get('steals', 0)} 失误{stats.get('error', 0)}"
 
 
-def base_payload(data: dict[str, Any], photo: str | None, scoreboard_photo: str | None, out_dir: Path) -> dict[str, Any]:
+def shooting_rate(stats: dict[str, Any]) -> float:
+    attempts = int(stats.get("shots") or 0)
+    return (int(stats.get("shootNum") or 0) / attempts) if attempts else 0.0
+
+
+def story_text(payload: dict[str, Any]) -> tuple[str, str]:
+    winner = payload["winner"]
+    loser = payload["loser"]
+    winner_stats = payload["winnerStats"]
+    loser_stats = payload["loserStats"]
+    rebound_margin = int(winner_stats.get("totalBoards") or 0) - int(loser_stats.get("totalBoards") or 0)
+    shooting_margin = shooting_rate(winner_stats) - shooting_rate(loser_stats)
+    score_margin = int(winner["score"]) - int(loser["score"])
+    winner_line = f"{winner_stats.get('shootNum', 0)}/{winner_stats.get('shots', 0)}"
+    loser_line = f"{loser_stats.get('shootNum', 0)}/{loser_stats.get('shots', 0)}"
+
+    if score_margin <= 3:
+        margin_label = "一分险胜" if score_margin == 1 else f"{score_margin}分险胜"
+        title = f"{margin_label}，{winner['name']}{winner['score']}:{loser['score']}力克{loser['name']}"
+        article = (
+            f"{winner['name']}以{winner['score']}:{loser['score']}险胜。"
+            f"球队全场投篮{winner_line}，对手为{loser_line}；"
+            f"即使篮板以{winner_stats.get('totalBoards', 0)}:{loser_stats.get('totalBoards', 0)}不占优势，"
+            f"仍凭更高的终结效率守住最后{score_margin}分。"
+        )
+    elif rebound_margin >= 8:
+        title = f"篮板与防守赢下回合，{winner['name']}战胜{loser['name']}"
+        article = (
+            f"{winner['name']}以{winner['score']}:{loser['score']}拿下比赛。"
+            f"全队以{winner_stats.get('totalBoards', 0)}:{loser_stats.get('totalBoards', 0)}领先篮板，"
+            f"并用{winner_stats.get('steals', 0)}次抢断和更稳定的球权控制守住胜果。"
+            f"{loser['name']}多点得分、末段仍有回应，但未能填平中段建立的分差。"
+        )
+    elif shooting_margin >= 0.08:
+        title = f"效率拉开差距，{winner['name']}战胜{loser['name']}"
+        article = (
+            f"{winner['name']}以{winner['score']}:{loser['score']}拿下比赛。"
+            f"投篮{winner_line}，对手为{loser_line}；"
+            f"篮板以{winner_stats.get('totalBoards', 0)}:{loser_stats.get('totalBoards', 0)}占优，"
+            f"并用{winner_stats.get('steals', 0)}次抢断和更稳定的两分球终结守住优势。"
+        )
+    else:
+        title = f"关键回合更稳，{winner['name']}战胜{loser['name']}"
+        article = (
+            f"{winner['name']}以{winner['score']}:{loser['score']}拿下比赛。"
+            f"球队在球权控制和关键回合终结上更加稳定，最终把优势保持到终场。"
+            f"{loser['name']}持续回应，也在对抗中展现了韧性。"
+        )
+    return title, article
+
+
+def base_payload(
+    data: dict[str, Any],
+    photo: str | None,
+    scoreboard_photo: str | None,
+    out_dir: Path,
+    embed_assets: bool = False,
+) -> dict[str, Any]:
     match = data["match"]
     home = match["homeTeam"]
     away = match["awayTeam"]
@@ -60,7 +123,10 @@ def base_payload(data: dict[str, Any], photo: str | None, scoreboard_photo: str 
     loser = away if winner is home else home
     winner_side = "home" if winner is home else "away"
     loser_side = "away" if winner_side == "home" else "home"
-    periods = " / ".join(f"{p['label']} {p['home']}:{p['away']}" for p in data.get("periods", []))
+    periods = " / ".join(
+        f"{'第' + str(index) + '节' if index <= 4 else '附加节' + str(index - 4)} {period['home']}:{period['away']}"
+        for index, period in enumerate(data.get("periods", []), start=1)
+    )
     return {
         "match": match,
         "home": home,
@@ -74,8 +140,8 @@ def base_payload(data: dict[str, Any], photo: str | None, scoreboard_photo: str 
         "winnerLeaders": data["leaders"][f"{winner_side}Scorers"][:4],
         "loserLeaders": data["leaders"][f"{loser_side}Scorers"][:4],
         "periods": periods,
-        "photo": asset_url(photo, out_dir),
-        "scoreboardPhoto": asset_url(scoreboard_photo, out_dir),
+        "photo": asset_url(photo, out_dir, embed_assets),
+        "scoreboardPhoto": asset_url(scoreboard_photo, out_dir, embed_assets),
     }
 
 
@@ -91,11 +157,7 @@ def render(style: str, payload: dict[str, Any]) -> str:
     loser_leaders = "".join(f"<li>{esc(fmt_player(p))}</li>" for p in payload["loserLeaders"])
     stat_a = esc(stats_text(winner["name"], payload["winnerStats"]))
     stat_b = esc(stats_text(loser["name"], payload["loserStats"]))
-    article = (
-        f"{winner['name']}以{winner['score']}:{loser['score']}拿下比赛。"
-        f"球队在篮板保护、进攻延续和多人得分上更稳定，最终把优势保持到终场。"
-        f"{loser['name']}核心球员持续回应，全队也在对抗中展现了韧性。"
-    )
+    title, article = story_text(payload)
     classes = f"poster {style}"
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -123,6 +185,7 @@ body {{ margin: 0; background: #111; font-family: -apple-system, BlinkMacSystemF
 .meta {{ position: absolute; left: 72px; right: 72px; bottom: 32px; display: flex; justify-content: space-between; font-size: 22px; opacity: .76; }}
 .scoreboard-img {{ width: 100%; border-radius: 8px; display: block; object-fit: cover; max-height: 248px; }}
 .cinematic-dark {{ color: #fff; background: radial-gradient(circle at 75% 20%, rgba(255,199,87,.35), transparent 32%), #111; {photo_css} background-size: cover; background-position: center; }}
+.cinematic-dark .title {{ font-size: 44px; }}
 .cinematic-dark .box {{ background: rgba(8,10,14,.68); border-color: rgba(255,255,255,.22); }}
 .cinematic-dark .article {{ color: #f7f0de; }}
 .cinematic-dark .team-score {{ color: #ffd35f; }}
@@ -150,7 +213,7 @@ body {{ margin: 0; background: #111; font-family: -apple-system, BlinkMacSystemF
 <body>
 <main class="{classes}">
   <div class="eyebrow">{esc(match.get('competitionName') or '篮球赛后复盘')} · {esc(match.get('roundName') or '')}</div>
-  <h1 class="title">多点支撑稳住局面，{esc(winner['name'])}战胜{esc(loser['name'])}</h1>
+  <h1 class="title">{esc(title)}</h1>
   <section class="score">
     <div class="team">
       <div class="team-name">{esc(home['name'])}</div>
@@ -200,11 +263,22 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--photo", help="Optional court photo path.")
     parser.add_argument("--scoreboard-photo", help="Optional scoreboard photo path.")
+    parser.add_argument(
+        "--embed-assets",
+        action="store_true",
+        help="Embed photos as data URLs so each HTML file is standalone.",
+    )
     args = parser.parse_args()
 
     data = json.loads(args.json_path.read_text(encoding="utf-8"))
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    payload = base_payload(data, args.photo, args.scoreboard_photo, args.out_dir)
+    payload = base_payload(
+        data,
+        args.photo,
+        args.scoreboard_photo,
+        args.out_dir,
+        args.embed_assets,
+    )
     styles = STYLES if args.style == "all" else [args.style]
     match = data["match"]
     stem = slug(f"{match['homeTeam']['name']}-{match['homeTeam']['score']}-{match['awayTeam']['score']}-{match['awayTeam']['name']}")

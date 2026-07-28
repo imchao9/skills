@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
 import subprocess
 from collections import Counter, defaultdict
@@ -14,7 +15,7 @@ from pathlib import Path
 MEMBER_RE = re.compile(
     r"^(?P<team>.+?)\s+(?P<number>\d+号)\s+(?P<player>.+?)\s+"
     r"(?P<action>2分命中|3分命中|助攻|抢断|盖帽)\s+"
-    r"(?P<period>第[一二三四]节|加时\d*)\s+(?P<clock>\d{2}_\d{2})$"
+    r"(?P<period>第[一二三四]节|加时\d*)\s+(?P<clock>\d{2}[:_-]\d{2})$"
 )
 
 
@@ -34,13 +35,33 @@ def player_stats(rows: list[dict[str, str]]) -> dict[tuple[str, str], Counter[st
     return result
 
 
-def stats_text(counter: Counter[str]) -> str:
+def labeled_stats_text(counter: Counter[str]) -> str:
     points = counter["2分命中"] * 2 + counter["3分命中"] * 3
     parts = [f"{points}分"]
     for action, suffix in (("助攻", "助攻"), ("抢断", "抢断"), ("盖帽", "盖帽")):
         if counter[action]:
             parts.append(f"{counter[action]}{suffix}")
     return "  ".join(parts)
+
+
+def official_player_stats(path: Path) -> dict[tuple[str, str], str]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    result: dict[tuple[str, str], str] = {}
+    for players in data.get("players", {}).values():
+        for player in players:
+            parts = [f"{int(player.get('score') or 0)}分"]
+            for field, suffix in (
+                ("totalBoards", "篮板"),
+                ("assists", "助攻"),
+                ("steals", "抢断"),
+                ("blocks", "盖帽"),
+            ):
+                value = int(player.get(field) or 0)
+                if value:
+                    parts.append(f"{value}{suffix}")
+            key = (str(player.get("playerNo") or ""), str(player.get("playerName") or ""))
+            result[key] = "  ".join(parts)
+    return result
 
 
 def parse_members(value: str) -> list[dict[str, str]]:
@@ -104,12 +125,14 @@ def main() -> int:
     parser.add_argument("--matches-csv", type=Path, required=True)
     parser.add_argument("--selection-csv", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--match-json", type=Path)
     parser.add_argument("--work-dir", type=Path)
     args = parser.parse_args()
 
     matches = read_csv(args.matches_csv)
     selection = read_csv(args.selection_csv)
     stats = player_stats(matches)
+    official_stats = official_player_stats(args.match_json) if args.match_json else {}
     work = args.work_dir or args.output.with_name(args.output.stem + "_labeled_work")
     labels = work / "labels"
     segments = work / "segments"
@@ -122,7 +145,14 @@ def main() -> int:
             raise FileNotFoundError(source)
         label = labels / f"label_{index:03d}.png"
         segment = segments / f"segment_{index:03d}.mp4"
-        title = f'{row["number"]} {row["player"]}｜本场 {stats_text(stats[(row["team"], row["player"])])}'
+        official = official_stats.get((row["number"], row["player"]))
+        if official:
+            title = f'{row["number"]} {row["player"]}｜本场 {official}'
+        else:
+            title = (
+                f'{row["number"]} {row["player"]}｜已标记 '
+                f'{labeled_stats_text(stats[(row["team"], row["player"])])}'
+            )
         write_label(label, title, event_text(row))
         run([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
