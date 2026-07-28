@@ -7,6 +7,13 @@ const test = require('node:test');
 const skillRoot = path.resolve(__dirname, '..', '..');
 const offlineDataQuery = path.join(skillRoot, 'scripts', 'offline-data-query');
 const defaultConfigFile = path.join(skillRoot, 'scripts', 'offline-data-query.config.json');
+const lbkWebAdminTestProfiles = [
+  { scenario: 'mysql-marketing', profile: 'test-mysql', source: 'mysql' },
+  { scenario: 'mysql-data-center', profile: 'test-mysql', source: 'mysql' },
+  { scenario: 'redis', profile: 'test-redis', source: 'redis' },
+  { scenario: 'redis-market', profile: 'test-redis', source: 'redis' },
+  { scenario: 'mongo', profile: 'test-mongo', source: 'mongo' },
+];
 
 function requireConfig() {
   if (!fs.existsSync(defaultConfigFile) && !process.env.OFFLINE_DATA_QUERY_CONFIG_FILE) {
@@ -73,18 +80,10 @@ test('live offline-data-query default profile uses sealed password', () => {
 
 test('live offline-data-query lbk-web-admin profiles are ready', () => {
   const config = readConfig();
-  const expected = {
-    'lbk-web-admin-mysql-marketing': 'mysql',
-    'lbk-web-admin-mysql-data-center': 'mysql',
-    'lbk-web-admin-redis': 'redis',
-    'lbk-web-admin-redis-market': 'redis',
-    'lbk-web-admin-mongo': 'mongo',
-  };
-
-  for (const [name, source] of Object.entries(expected)) {
-    const profile = config.profiles && config.profiles[name];
-    assert.ok(profile, `${name} profile missing`);
-    assert.equal(profile.source, source, `${name} source`);
+  for (const target of lbkWebAdminTestProfiles) {
+    const profile = config.profiles && config.profiles[target.profile];
+    assert.ok(profile, `lbk-web-admin-${target.scenario} requires ${target.profile}`);
+    assert.equal(profile.source, target.source, `lbk-web-admin-${target.scenario} source`);
     if (profile.password) {
       assert.match(profile.password, /^sealed:v1:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+$/);
     }
@@ -99,25 +98,26 @@ test('live offline-data-query executes default readonly MySQL profile', () => {
 });
 
 test('live offline-data-query executes lbk-web-admin MySQL profiles', () => {
-  for (const profile of ['lbk-web-admin-mysql-marketing', 'lbk-web-admin-mysql-data-center']) {
-    const result = runOfflineProfile(profile, ['SELECT 1 AS value']);
-    assert.equal(result.status, 0, `${profile}\n${result.stderr}`);
+  for (const target of lbkWebAdminTestProfiles.filter((item) => item.source === 'mysql')) {
+    const result = runOfflineProfile(target.profile, ['SELECT 1 AS value']);
+    assert.equal(result.status, 0, `lbk-web-admin-${target.scenario}\n${result.stderr}`);
     assert.equal(result.stderr, '');
     assert.equal(result.stdout.trim(), 'value\n1');
   }
 });
 
 test('live offline-data-query executes lbk-web-admin Redis profiles', () => {
-  for (const profile of ['lbk-web-admin-redis', 'lbk-web-admin-redis-market']) {
-    const result = runOfflineProfile(profile, ['TYPE __codemao_troubleshoot_live_probe_never__']);
-    assert.equal(result.status, 0, `${profile}\n${result.stderr}`);
+  for (const target of lbkWebAdminTestProfiles.filter((item) => item.source === 'redis')) {
+    const result = runOfflineProfile(target.profile, ['TYPE __codemao_troubleshoot_live_probe_never__']);
+    assert.equal(result.status, 0, `lbk-web-admin-${target.scenario}\n${result.stderr}`);
     assert.equal(result.stderr, '');
     assert.equal(result.stdout.trim(), 'value\nnone');
   }
 });
 
 test('live offline-data-query executes lbk-web-admin Mongo profile', () => {
-  const result = runOfflineProfile('lbk-web-admin-mongo', ['{"op":"listCollections","limit":5}']);
+  const target = lbkWebAdminTestProfiles.find((item) => item.source === 'mongo');
+  const result = runOfflineProfile(target.profile, ['{"op":"listCollections","limit":5}']);
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, '');
@@ -125,15 +125,15 @@ test('live offline-data-query executes lbk-web-admin Mongo profile', () => {
 });
 
 test('live offline-data-query executes temporary source arguments', () => {
-  const mysql = runOfflineSource('lbk-web-admin-mysql-marketing', ['SELECT 1 AS value']);
+  const mysql = runOfflineSource('test-mysql', ['SELECT 1 AS value']);
   assert.equal(mysql.status, 0, mysql.stderr);
   assert.equal(mysql.stdout.trim(), 'value\n1');
 
-  const redis = runOfflineSource('lbk-web-admin-redis', ['TYPE __codemao_troubleshoot_live_probe_never__']);
+  const redis = runOfflineSource('test-redis', ['TYPE __codemao_troubleshoot_live_probe_never__']);
   assert.equal(redis.status, 0, redis.stderr);
   assert.equal(redis.stdout.trim(), 'value\nnone');
 
-  const mongo = runOfflineSource('lbk-web-admin-mongo', ['{"op":"listCollections","limit":5}']);
+  const mongo = runOfflineSource('test-mongo', ['{"op":"listCollections","limit":5}']);
   assert.equal(mongo.status, 0, mongo.stderr);
   assert.match(mongo.stdout, /^name\n/);
 });

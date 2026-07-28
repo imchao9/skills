@@ -21,6 +21,16 @@ const DEFAULT_APOLLO_NAMESPACES = ['application', 'application-volatile'];
 const DEFAULT_APOLLO_QUERY_IP = '10.240.7.233';
 const OFFLINE_ENVS = new Set(['test', 'staging', 'press']);
 const DEFAULT_AUTH_STATE_FILE = path.join(OUTPUT_DIR, 'service-api-auth.json');
+const DINGTALK_LOGIN_ORIGIN = 'https://login.dingtalk.com';
+
+async function grantDingTalkLocalNetworkAccess(context) {
+  try {
+    await context.grantPermissions(['local-network-access'], { origin: DINGTALK_LOGIN_ORIGIN });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
 
 const HELP = {
   top: `usage: scripts/service-api [--config CONFIG] <command> ...
@@ -1257,6 +1267,7 @@ async function handleAuth(args, config, authFilePath) {
     headless: false,
     chromiumSandbox: true,
   });
+  await grantDingTalkLocalNetworkAccess(context);
   let settled = false;
   let timeoutId;
   let authWriteInFlight = false;
@@ -1481,6 +1492,7 @@ module.exports = {
   compactInstance,
   extractApolloApps,
   installBrowserAuthCloseHandlers,
+  grantDingTalkLocalNetworkAccess,
   missingAuthCookies,
   normalizeUrlNoHash,
   originFromUrl,

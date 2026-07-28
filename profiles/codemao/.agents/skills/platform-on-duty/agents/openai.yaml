@@ -1,0 +1,6 @@
+interface:
+  display_name: "平台值班峰值回填"
+  short_description: "查询服务秒级峰值，回填 SLS 与 Grafana 监控截图"
+  default_prompt: "使用 $platform-on-duty：值班人林纬达，时间段今天18:30到20:00。"
+policy:
+  allow_implicit_invocation: false

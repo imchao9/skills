@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { sealCredential } = require('../skillctl');
+const { formatRedisResult, formatRows, resolveMysqlOptions } = require('../offline-data-query');
 
 const skillRoot = path.resolve(__dirname, '..', '..');
 const offlineDataQuery = path.join(skillRoot, 'scripts', 'offline-data-query');
@@ -68,6 +69,111 @@ function mongoProfileConfig(profile = {}) {
     },
   });
 }
+
+test('offline-data-query truncates MySQL output after 1000 rows and reports the full count', () => {
+  const rows = Array.from({ length: 1001 }, (_, index) => ({ id: index }));
+
+  const lines = formatRows([{ name: 'id' }], rows).trimEnd().split('\n');
+
+  assert.equal(lines.length, 1002);
+  assert.equal(lines[0], 'id');
+  assert.equal(lines[1000], '999');
+  assert.equal(lines[1001], '[truncated: showing first 1000 of 1001 items]');
+  assert.doesNotMatch(lines.join('\n'), /^1000$/m);
+});
+
+test('offline-data-query keeps complete MySQL output at the 1000 row boundary', () => {
+  const rows = Array.from({ length: 1000 }, (_, index) => ({ id: index }));
+
+  const output = formatRows([{ name: 'id' }], rows);
+
+  assert.equal(output.trimEnd().split('\n').length, 1001);
+  assert.match(output, /\n999\n$/);
+  assert.doesNotMatch(output, /\[truncated:/);
+});
+
+test('offline-data-query truncates Redis arrays after 1000 items and reports the full count', () => {
+  const values = Array.from({ length: 1001 }, (_, index) => `value-${index}`);
+
+  const lines = formatRedisResult(values).trimEnd().split('\n');
+
+  assert.equal(lines.length, 1002);
+  assert.equal(lines[0], 'index\tvalue');
+  assert.equal(lines[1000], '999\tvalue-999');
+  assert.equal(lines[1001], '[truncated: showing first 1000 of 1001 items]');
+  assert.doesNotMatch(lines.join('\n'), /^1000\t/m);
+});
+
+test('offline-data-query truncates Redis objects after 1000 entries and preserves entry order', () => {
+  const value = Object.fromEntries(Array.from({ length: 1001 }, (_, index) => [`key-${index}`, `value-${index}`]));
+
+  const lines = formatRedisResult(value).trimEnd().split('\n');
+
+  assert.equal(lines.length, 1002);
+  assert.equal(lines[0], 'key\tvalue');
+  assert.equal(lines[1000], 'key-999\tvalue-999');
+  assert.equal(lines[1001], '[truncated: showing first 1000 of 1001 items]');
+  assert.doesNotMatch(lines.join('\n'), /^key-1000\t/m);
+});
+
+test('offline-data-query keeps Redis and Mongo distinct array output complete at the 1000 item boundary', () => {
+  const values = Array.from({ length: 1000 }, (_, index) => `value-${index}`);
+
+  const output = formatRedisResult(values);
+
+  assert.match(output, /\n999\tvalue-999\n$/);
+  assert.doesNotMatch(output, /\[truncated:/);
+});
+
+test('offline-data-query keeps Redis object output complete at the 1000 entry boundary', () => {
+  const value = Object.fromEntries(Array.from({ length: 1000 }, (_, index) => [`key-${index}`, `value-${index}`]));
+
+  const output = formatRedisResult(value);
+
+  assert.match(output, /\nkey-999\tvalue-999\n$/);
+  assert.doesNotMatch(output, /\[truncated:/);
+});
+
+test('offline-data-query does not enable MySQL TLS when useSSL is absent', () => {
+  const options = resolveMysqlOptions({
+    url: 'mysql://localhost:3306/demo',
+    user: 'readonly_user',
+    password: sealCredential('secret-password'),
+  }, { connectTimeoutMs: 5000 });
+
+  assert.equal(Object.hasOwn(options, 'ssl'), false);
+});
+
+test('offline-data-query does not enable MySQL TLS when useSSL is false', () => {
+  const options = resolveMysqlOptions({
+    url: 'mysql://localhost:3306/demo?useSSL=false',
+    user: 'readonly_user',
+    password: sealCredential('secret-password'),
+  }, { connectTimeoutMs: 5000 });
+
+  assert.equal(Object.hasOwn(options, 'ssl'), false);
+});
+
+test('offline-data-query enables certificate-verified MySQL TLS when useSSL is true', () => {
+  const options = resolveMysqlOptions({
+    url: 'mysql://localhost:3306/demo?useSSL=true',
+    user: 'readonly_user',
+    password: sealCredential('secret-password'),
+  }, { connectTimeoutMs: 5000 });
+
+  assert.deepEqual(options.ssl, { rejectUnauthorized: true });
+});
+
+test('offline-data-query rejects unsupported non-empty MySQL useSSL values', () => {
+  assert.throws(
+    () => resolveMysqlOptions({
+      url: 'mysql://localhost:3306/demo?useSSL=required',
+      user: 'readonly_user',
+      password: sealCredential('secret-password'),
+    }, { connectTimeoutMs: 5000 }),
+    (error) => error.code === 'invalid_config' && /useSSL/.test(error.message),
+  );
+});
 
 test('offline-data-query help exposes profile interface and not env routing', () => {
   const result = runCli(['--help']);

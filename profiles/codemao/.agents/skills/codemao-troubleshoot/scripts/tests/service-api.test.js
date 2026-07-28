@@ -1117,6 +1117,17 @@ test('service-api browser auth lifecycle exits when the login tab is closed', ()
   assert.match(calls[0].message, /登录已取消或浏览器已关闭/);
 });
 
+test('service-api preauthorizes DingTalk local network access without making it required', async () => {
+  const calls = [];
+  assert.equal(await serviceApiModule.grantDingTalkLocalNetworkAccess({
+    grantPermissions: async (...args) => calls.push(args),
+  }), true);
+  assert.deepEqual(calls, [[['local-network-access'], { origin: 'https://login.dingtalk.com' }]]);
+  assert.equal(await serviceApiModule.grantDingTalkLocalNetworkAccess({
+    grantPermissions: async () => { throw new Error('unsupported'); },
+  }), false);
+});
+
 test('service-api rejects prod Eureka discovery before loading config', () => {
   const result = runCli(['discover', 'get', '--env', 'prod', '--service', 'demo-service']);
 

@@ -16,6 +16,8 @@
 | `obsidian-vault` | Local maintained fork of `profiles/mattpocock-skills/.agents/skills/obsidian-vault` | `local-fork`：不允许上游覆盖；上游只用于人工 diff；本地版本负责真实 vault 路径、结构保护和 Codex-Memory 规则。 |
 | `accept-tech-plan`、`cg-gen`、`cg-req`、`codemao-learning`、`codemao-troubleshoot`、`crp-deploy`、`dingtalk-mcp-reader`、`feign-client-example-generator`、`java-backend-code-review`、`java-backend-knowledge-base`、`market-live-report-skill` | `git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git`，经 `profiles/codemao` 维护 | `follow-after-review`：先刷新公司 profile、清理 `data/`、`output/` 和缓存等运行产物，再逐项同步到运行态。`codemao-learning` 已同步到来源 profile 记录的 upstream commit `882508ed31f992fd5212d13d281f287368ccb1cf`；其余全局副本仍基于 `64a5c38db558820cccd2de87b002ad1fadb82904` 或保持各自已审查版本。 |
 
+2026-07-28 来源快照：`agent-reach` 已跟随上游 `b4d52c46c9113cb0f653d6df4cf71ebadf4930ac`；`ce-compound` 已审查并同步上游 `a9f6d530d4446d805a3100387dedd86268d7e695`；`drawio-skill` 已选择性吸收上游 `719fd3663b7ec702e2ff969231f42e167c3d556b` 的 edge port 能力并保留本地窄 wrapper。`profiles/codemao` 已刷新到 `d98cf06ce4cd742dd2a877c8f9159ce8cbce33b1`，但本次未把其新增或扩权变化同步到全局。
+
 ## Unresolved provenance
 
 以下运行态 skill 当前没有可确认的同名 canonical profile，升级前必须先补齐来源：

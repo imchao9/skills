@@ -22,39 +22,69 @@ scripts/skillctl setup --check
 scripts/skillctl setup --install
 ```
 
-## 配置 alilog 自动填充
+## 保存 SLS 登录凭据
 
-如果要使用 SLS，建议配置阿里云登录自动填充。这样 `scripts/alilog auth` 可以辅助填写账号、密码和 TOTP 安全码。
+在终端执行以下两条命令，并将 `"你的阿里云账号"` 替换为实际登录账号。
 
-不配置也可以使用 SLS，只是登录时需要手动填写。
-
-### 自动填充行为
-
-脚本只在对应输入框为空时填写账号、密码和 TOTP，不会覆盖你已经填写的内容，也不会点击下一步、登录、获取验证码、提交验证或安全验证按钮。
-
-短信/手机验证码不能由本地 TOTP seed 生成。脚本检测到手机验证码输入框时，只会提示手动获取并填写，不会把本地 TOTP 填进去。
-
-遇到阿里云滑块验证码时，脚本会停止本轮自动填充，重新打开 RAM 登录页，最多自动恢复 2 次。仍失败时会提示完整手动登录。
-
-### 保存密码
-
-把 `<account>` 换成阿里云账号：
+保存登录密码：
 
 ```bash
-read -rsp "Aliyun password: " ALILOG_PASSWORD; echo
-security add-generic-password -U -s alilog -a "<account>" -w "$ALILOG_PASSWORD"
-unset ALILOG_PASSWORD
+security add-generic-password -U -s alilog -a "你的阿里云账号" -w
 ```
 
-### 保存 TOTP seed
-
-支持普通 TOTP seed，也支持 `otpauth://` URL。把 `<account>` 换成同一个阿里云账号：
+保存 TOTP seed：
 
 ```bash
-read -rsp "Aliyun TOTP seed or otpauth URL: " ALILOG_TOTP_SEED; echo
-security add-generic-password -U -s alilog-totp -a "<account>" -w "$ALILOG_TOTP_SEED"
-unset ALILOG_TOTP_SEED
+security add-generic-password -U -s alilog-totp -a "你的阿里云账号" -w
 ```
+
+命令等待输入时，直接粘贴对应的密码或 TOTP seed 并按回车。输入内容不会显示。两条命令必须使用同一个账号；`-U` 会更新已有的 Keychain 条目。
+
+如需核对保存结果，可以分别执行：
+
+查看登录密码：
+
+```bash
+security find-generic-password -s alilog -a "你的阿里云账号" -w
+```
+
+查看 TOTP seed：
+
+```bash
+security find-generic-password -s alilog-totp -a "你的阿里云账号" -w
+```
+
+命令会在终端中明文显示密码或 TOTP seed，请勿在屏幕共享或录屏时执行。
+
+不配置这些凭据也可以使用 SLS，但需要在 Chrome 中手动登录。
+
+
+### TOTP seed 的格式和获取方式
+
+TOTP seed 是虚拟 MFA 生成动态安全码所使用的长期密钥，不是认证器当前显示的 6 位安全码。可以保存以下任一种内容：
+
+- Base32 seed
+- 完整的 `otpauth://totp/...` URL
+
+例如：
+
+Base32 seed：
+
+```text
+JBSWY3DPEHPK3PXP
+```
+
+完整的 `otpauth://` URL：
+
+```text
+otpauth://totp/Aliyun:example?secret=JBSWY3DPEHPK3PXP&issuer=Aliyun
+```
+
+绑定或重新绑定阿里云虚拟 MFA 时，选择手动添加。页面显示的“密钥”就是 seed；已有完整的 `otpauth://totp/...` URL 时，也可以直接使用。
+
+二维码图片、短信验证码和当前显示的 6 位安全码都不能作为 seed。如果没有原始密钥或完整 URL，需要通过有权限的虚拟 MFA 重新绑定流程生成。
+
+自动填充仅支持 RFC 6238 TOTP：`SHA1`、6 位安全码和 30 秒周期。
 
 ### 账号来源
 
@@ -70,7 +100,7 @@ ALILOG_USERNAME
 
 通常只要密码或 TOTP seed 已经保存到 Keychain，脚本就能从对应 Keychain 条目的 `acct` 字段反查账号，不一定需要 `output/alilog-user.json`。
 
-### 验证
+### 验证配置
 
 运行：
 
@@ -78,16 +108,6 @@ ALILOG_USERNAME
 scripts/alilog auth
 ```
 
-成功后 stdout 只输出：
+同一次 `auth` 运行维护一份凭据计划。账号未知的有头自动填充可能在账号出现在页面后，才首次读取对应的 Keychain 条目；某项从 Keychain 读取后，即使随后更新，当前窗口也不会重新读取。若页面明确提示密码或安全码错误，当前窗口会停止自动填充，你仍可在该页面手动输入并完成本次登录；更新凭据后，请重新运行 `scripts/alilog auth`。
 
-```text
-auth ready
-```
-
-需要查看自动填充、验证码恢复、CSRF 捕获等状态时运行：
-
-```bash
-scripts/alilog auth --debug
-```
-
-不要把密码、TOTP seed、cookie、CSRF token 或 `output/alilog-auth.json` 内容粘贴到聊天或文档里。
+认证流程、输出和登录失败处理见 `references/sls.md`。

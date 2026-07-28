@@ -9,6 +9,7 @@ const {
   REDACTED,
   redactText,
   redactValue,
+  setupCheck,
 } = require('../skillctl');
 
 function runCli(args, options = {}) {
@@ -45,20 +46,58 @@ test('skillctl does not provide credential reveal', () => {
   assert.doesNotMatch(result.stdout, /secret/);
 });
 
-test('skillctl setup check verifies installable dependencies without auth checks', () => {
-  const result = runCli(['setup', '--check']);
+test('skillctl setup check reports a complete simulated environment as ready', () => {
+  const result = setupCheck(() => ({
+    nodeVersion: 'v22.15.0',
+    npm: { ok: true, stdout: '10.9.2\n' },
+    lockfileExists: true,
+    packages: {
+      mysql2: '/fixtures/mysql2/package.json',
+      redis: '/fixtures/redis/package.json',
+      mongodb: '/fixtures/mongodb/package.json',
+      playwright: '/fixtures/playwright/package.json',
+    },
+    chromePath: '/fixtures/Google Chrome',
+  }));
 
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /\[ok\] node/);
-  assert.match(result.stdout, /\[ok\] npm/);
-  assert.match(result.stdout, /\[ok\] package-lock\.json/);
-  assert.match(result.stdout, /\[ok\] mysql2/);
-  assert.match(result.stdout, /\[ok\] redis/);
-  assert.match(result.stdout, /\[ok\] mongodb/);
-  assert.match(result.stdout, /\[ok\] playwright/);
-  assert.match(result.stdout, /\[ok\] chrome/);
-  assert.doesNotMatch(result.stdout, /alilog auth/);
-  assert.doesNotMatch(result.stdout, /dbops/);
+  assert.equal(result.ok, true);
+  assert.match(result.output, /\[ok\] node v22\.15\.0/);
+  assert.match(result.output, /\[ok\] npm 10\.9\.2/);
+  assert.match(result.output, /\[ok\] package-lock\.json/);
+  assert.match(result.output, /\[ok\] mysql2/);
+  assert.match(result.output, /\[ok\] redis/);
+  assert.match(result.output, /\[ok\] mongodb/);
+  assert.match(result.output, /\[ok\] playwright/);
+  assert.match(result.output, /\[ok\] chrome \/fixtures\/Google Chrome/);
+  assert.match(result.output, /setup ready/);
+  assert.doesNotMatch(result.output, /alilog auth|dbops|cookie|credential/i);
+});
+
+test('skillctl setup check reports missing simulated dependencies without auth checks', () => {
+  const result = setupCheck(() => ({
+    nodeVersion: 'v18.20.0',
+    npm: { ok: false, stdout: '' },
+    lockfileExists: false,
+    packages: {
+      mysql2: '',
+      redis: '',
+      mongodb: '',
+      playwright: '',
+    },
+    chromePath: '',
+  }));
+
+  assert.equal(result.ok, false);
+  assert.match(result.output, /\[missing\] node >= 20/);
+  assert.match(result.output, /\[missing\] npm/);
+  assert.match(result.output, /\[missing\] package-lock\.json/);
+  assert.match(result.output, /\[missing\] mysql2/);
+  assert.match(result.output, /\[missing\] redis/);
+  assert.match(result.output, /\[missing\] mongodb/);
+  assert.match(result.output, /\[missing\] playwright/);
+  assert.match(result.output, /\[missing\] chrome/);
+  assert.match(result.output, /scripts\/skillctl setup --install/);
+  assert.doesNotMatch(result.output, /alilog auth|dbops|cookie|credential/i);
 });
 
 test('skillctl redactText masks mobile numbers and sensitive key values', () => {

@@ -12,6 +12,16 @@ const DEFAULT_STORAGE_STATE = path.join(OUTPUT_DIR, 'auth-storage-state.json');
 const DEFAULT_AUTH_FILE = path.join(OUTPUT_DIR, 'auth-cookie.txt');
 const PLAYWRIGHT_OPEN_TIMEOUT_MS = 30000;
 const REQUIRED_AUTH_COOKIE_NAMES = new Set(['internal_account_token', 'admin-authorization']);
+const DINGTALK_LOGIN_ORIGIN = 'https://login.dingtalk.com';
+
+async function grantDingTalkLocalNetworkAccess(context) {
+  try {
+    await context.grantPermissions(['local-network-access'], { origin: DINGTALK_LOGIN_ORIGIN });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
 
 function parseArgs(argv) {
   const args = {
@@ -136,6 +146,7 @@ async function runLogin(args) {
     channel: 'chrome',
     headless: false,
   });
+  await grantDingTalkLocalNetworkAccess(context);
   let settled = false;
   let pageCount = 0;
   let timeoutId;
@@ -204,10 +215,14 @@ async function runLogin(args) {
   }
 }
 
-(async () => {
-  const args = parseArgs(process.argv.slice(2));
-  await runLogin(args);
-})().catch((error) => {
-  console.error(`ERROR: ${error && error.message ? error.message : String(error)}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  (async () => {
+    const args = parseArgs(process.argv.slice(2));
+    await runLogin(args);
+  })().catch((error) => {
+    console.error(`ERROR: ${error && error.message ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { grantDingTalkLocalNetworkAccess };

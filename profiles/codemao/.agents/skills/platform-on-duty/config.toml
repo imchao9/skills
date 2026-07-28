@@ -1,0 +1,55 @@
+version = 4
+timezone = "Asia/Shanghai"
+
+[defaults]
+start = "18:30:00"
+end = "20:00:00"
+
+[sls]
+url = "https://sls.console.aliyun.com/lognext/project/kuebernetes-production/logsearch/tomcat-log"
+initial_limit = 100
+max_tie_limit = 100000
+retry_count = 2
+
+[sls.filter_info]
+fjcode = "()"
+fq = ""
+
+[screenshot]
+window_seconds = 60
+result_limit = 100
+hover_retry_count = 2
+capture_retry_count = 2
+
+[grafana]
+url = "https://grafana.codemao.cn/d/SpSQKcpMl/k8s-for-aliyun-pro?orgId=1&refresh=30s&from=now-1h&to=now&var-origin_prometheus=&var-Node=All&var-NameSpace=pt-external&var-Container=platform-account&var-Container=auth-service&var-Pod=All"
+section_title = "微服务与Pod资源曲线图"
+capture_retry_count = 2
+
+[sheet]
+url = "https://alidocs.dingtalk.com/i/nodes/m9bN7RYPWdlGAPm3F3mopx4gWZd1wyK0"
+name = "Sheet1"
+date_header = "时间"
+attendant_header = "人员"
+screenshot_start_header = "服务监控情况"
+image_row_height = 120
+
+[[services]]
+name = "auth-service"
+header_keyword = "AuthService"
+query = "__tag__:_container_name_: auth-service | select url_extract_path(url) as url, count(*) as c group by url order by c desc"
+
+[[services]]
+name = "internal-account-service"
+header_keyword = "InternalAccount"
+query = "__tag__:_container_name_: internal-account-service | select url_extract_path(url) as url, count(*) as c group by url order by c desc"
+
+[[services]]
+name = "platform-account"
+header_keyword = "accounthub"
+query = "__tag__:_container_name_: platform-account | select url_extract_path(url) as url, count(*) as c group by url order by c desc"
+
+[[services]]
+name = "文本审核"
+header_keyword = "文本审核"
+query = "__tag__:_container_name_: platform-it-manage-admin-service and url: \"/rpc/text/review\""

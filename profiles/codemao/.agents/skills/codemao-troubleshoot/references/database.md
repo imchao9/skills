@@ -31,8 +31,14 @@ scripts/offline-data-query --profile test-mongo '{"op":"listCollections","limit"
 - dbops 输出会脱敏手机号和密钥类字段；不要为了看原文绕过工具。
 - 单条数据状态通常只是线索，需要和日志、代码条件或配置组合后再下结论。
 - `instances` 和 `resources` 查的是 dbops 元数据，可证明候选实例、库、表在平台侧存在；但不证明当前账号有数据查询权限，权限必须用最小只读 SQL 验证。
+- 只有在默认实例和数据库明确匹配目标时，才使用默认查询目标。否则应要求用户提供实例和数据库。
 - 当前 dbops 查询路径没有 `information_schema` 权限，定位表不要走 `information_schema`。
-- 数据位置不明时，禁止默认全量扫描所有可读实例、库和表。先用业务对象、页面/接口、服务名、日志/TID、代码或 SQL 片段、`querylog`、`favorites` 等线索缩小候选；确需全量元数据扫描时，先说明成本并等待确认。
+- dbops 查询 MySQL 表定义时使用 `SHOW CREATE TABLE \`table_name\``；平台不支持 `DESC` 或 `DESCRIBE`。
+- 需要完整 dbops 上游响应时，使用显式 `api GET|POST` 兜底。不要把 `api` 当默认排障入口；它适合验证尚未包装的平台接口或临时补足能力。
+- 数据位置不明时，不要默认扫描所有可读实例、库和表。先用业务对象、页面/接口、服务名、日志/TID、代码或 SQL 片段等已有线索缩小候选；有业务含义时，可用 `favorite-find` 搜收藏标题，命中后用 `favorite-info` 反查实例、库和表，或以小页 `querylog` 补充当前账号近期历史 SQL。仍无法定位时，再用 `instances known_access` 探索申请记录已确认的实例和库。
+- `known_access` 和 `known_access_databases` 只覆盖已知有权限的部分；未命中不能判断没有权限。`count=0` 只表示当前申请记录没有候选，应继续依据已有线索定位，不要自动扩大扫描范围。已知存储类型时，可加 `db_type TYPE` 缩小候选，例如 `instances known_access db_type mysql`；实际类型以 dbops 返回值为准。
+- `known_access` 候选过多时，继续翻列表猜测目标的成本与 `can_read` 扫描相近，不要继续。应根据已有线索缩小范围；仍无法缩小时，说明候选过多、当前无法可靠定位目标且继续扫描成本过高，等待用户补充线索或确认扩大范围。
+- 需要扩大到 `instances can_read` 或 `resources` 时，先评估扫描范围和成本；成本较高则说明后等待确认。
 
 ## 线上：dbops-query
 
@@ -46,11 +52,9 @@ scripts/dbops-query auth
 
 非敏感默认配置放在 `scripts/dbops-query.config.json`。cookie 材料不能写进该配置。
 
-只有在默认实例和数据库明确匹配目标时，才使用默认查询目标。否则应要求用户提供实例和数据库。
+`instances`、`resources`、`querylog`、`favorites` 用于确认目标实例、库、表、历史 SQL 或收藏入口；具体参数看对应子命令的 `--help`。
 
-`instances`、`resources`、`querylog`、`favorites` 等探索命令用于确认目标实例、库、表、历史 SQL 或收藏入口；具体参数看 `scripts/dbops-query --help`。默认 SQL 入口、`query-on`、`favorite-run`、`favorite-query` 输出 TSV 查询结果。
-
-需要完整 dbops 上游响应时，使用显式 `api GET|POST` 兜底。不要把 `api` 当默认排障入口；它适合验证尚未包装的平台接口或临时补足能力。
+默认入口、`query-on`、`favorite-run`、`favorite-query` 输出 TSV 查询结果。关系型实例只接受 `SELECT`、`SHOW`、`EXPLAIN`；Redis/Mongo 命令交由 dbops 服务端校验。
 
 收藏和取消收藏是排查准备或知识沉淀动作。例如排查中发现某条 SQL 后续会经常复用，可以建议收藏；排查后总结发现某条收藏已无价值，也可以建议取消。
 

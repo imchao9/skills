@@ -8,7 +8,7 @@ description: Use for CRP build, test submission, release, deploy, especially one
 这个 skill 覆盖 CRP 上常见的构建、提测、部署操作。
 
 命令都在本 skill 主目录执行。
-执行构建、提测、部署相关命令时，运行环境必须能访问 CRP/CMDB 网络接口；如果默认执行环境无法访问这些接口，应直接使用具备网络访问能力的执行方式。
+执行构建、提测、部署相关命令时，运行环境必须能访问 CRP/CMDB 网络接口；异步部署还会启动后台续跑进程，因此必须保证该进程同样能够访问 CRP/DNS。若默认执行环境不满足以上条件，应直接使用具备宿主网络能力的执行方式。
 
 ## 使用场景
 
@@ -33,7 +33,7 @@ scripts/crp-deploy workflow-deploy-test \
 - `--requirement-name` 在当前可选需求里做字符串包含匹配，唯一命中才继续
 - `--module-name` 支持完整模块名、业务名或唯一片段，例如 `namespace/example-service-name`、`example-service-name`、`example-service`
 - 搜索不到或候选不唯一时，命令会失败并打印精简 JSON 候选。需求看 `requirement_candidates`；模块看 `resolved_modules` 和 `module_candidates`。能唯一判断就用更准确的参数重试；不能判断就向用户要更准确名称，或让用户从候选里复制。
-- 当前需求下已有测试单时，workflow 会复用最新一张；完全没有测试单时才会新建提测单。若新建时项目下有多个 QA，按提示从可选 QA 名单里选一个 `user_id`，补上 `--qa-assignee <QA user_id>` 重试。
+- 当前需求下已有测试单时，workflow 会复用最新一张；没有测试单时才会新建。新建时若存在多个 QA，命令会返回 `qa_candidates`。必须以紧凑列表展示返回的候选人姓名和 `user_id`，再请用户选择；不得只报告候选人数，或要求用户提供未展示的姓名。用户回复的姓名能唯一匹配时，直接使用对应 `user_id` 补充 `--qa-assignee` 并重试；无法唯一匹配时再确认。
 
 除非用户明确要求，否则不要加 `--dry-run` 或 `--wait`。
 

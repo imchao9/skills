@@ -49,6 +49,7 @@ const READONLY_MONGO_OPS = new Set([
 ]);
 const DEFAULT_MONGO_LIMIT = 10;
 const MAX_MONGO_LIMIT = 100;
+const MAX_OUTPUT_ITEMS = 1000;
 
 const USAGE = `Usage:
   offline-data-query --profile PROFILE "SELECT * FROM tbl_xxx LIMIT 5"
@@ -320,8 +321,12 @@ function resolveMysqlOptions(profile, args) {
   const mysqlUrl = parseMysqlUrl(profile.url);
   const password = unsealCredential(profile.password);
   const charset = mysqlUrl.query.get('characterEncoding') || mysqlUrl.query.get('charset') || 'utf8mb4';
+  const useSsl = mysqlUrl.query.get('useSSL');
+  if (useSsl && useSsl !== 'true' && useSsl !== 'false') {
+    throw new CliError('invalid_config', 'MySQL URL useSSL must be true or false', 2);
+  }
 
-  return {
+  const options = {
     host: mysqlUrl.host,
     port: mysqlUrl.port,
     user: profile.user,
@@ -330,8 +335,9 @@ function resolveMysqlOptions(profile, args) {
     charset,
     connectTimeout: args.connectTimeoutMs,
     multipleStatements: false,
-    ssl: mysqlUrl.query.get('useSSL') === 'false' ? undefined : undefined,
   };
+  if (useSsl === 'true') options.ssl = { rejectUnauthorized: true };
+  return options;
 }
 
 function stringifyCell(value) {
@@ -340,13 +346,19 @@ function stringifyCell(value) {
   return String(value);
 }
 
+function formatTruncationNotice(total) {
+  if (total <= MAX_OUTPUT_ITEMS) return '';
+  return `[truncated: showing first ${MAX_OUTPUT_ITEMS} of ${total} items]\n`;
+}
+
 function formatRows(fields, rows) {
   if (!fields || !fields.length) return '';
+  const visibleRows = rows.slice(0, MAX_OUTPUT_ITEMS);
   const lines = [
     fields.map((field) => field.name).join('\t'),
-    ...rows.map((row) => fields.map((field) => stringifyCell(row[field.name])).join('\t')),
+    ...visibleRows.map((row) => fields.map((field) => stringifyCell(row[field.name])).join('\t')),
   ];
-  return `${lines.join('\n')}\n`;
+  return `${lines.join('\n')}\n${formatTruncationNotice(rows.length)}`;
 }
 
 async function loadMysqlDriver() {
@@ -408,10 +420,15 @@ async function loadRedisDriver() {
 
 function formatRedisResult(value) {
   if (Array.isArray(value)) {
-    return `index\tvalue\n${value.map((item, index) => `${index}\t${stringifyCell(item)}`).join('\n')}\n`;
+    const visibleValues = value.slice(0, MAX_OUTPUT_ITEMS);
+    const rows = visibleValues.map((item, index) => `${index}\t${stringifyCell(item)}`).join('\n');
+    return `index\tvalue\n${rows}\n${formatTruncationNotice(value.length)}`;
   }
   if (value && typeof value === 'object') {
-    return `key\tvalue\n${Object.entries(value).map(([key, item]) => `${key}\t${stringifyCell(item)}`).join('\n')}\n`;
+    const entries = Object.entries(value);
+    const visibleEntries = entries.slice(0, MAX_OUTPUT_ITEMS);
+    const rows = visibleEntries.map(([key, item]) => `${key}\t${stringifyCell(item)}`).join('\n');
+    return `key\tvalue\n${rows}\n${formatTruncationNotice(entries.length)}`;
   }
   return `value\n${stringifyCell(value)}\n`;
 }
@@ -618,6 +635,7 @@ if (require.main === module) {
 
 module.exports = {
   checkReadonlySql,
+  formatRedisResult,
   formatRows,
   loadSourceProfile,
   loadProfile,

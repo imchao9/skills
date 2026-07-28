@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { execFile, spawn } = require('node:child_process');
+const { execFile, fork } = require('node:child_process');
 const { promisify } = require('node:util');
 const { redactText } = require('./skillctl');
 
@@ -30,8 +30,15 @@ const CONTINUE_LOG_CHAR_LIMIT = 800;
 const DEFAULT_TOTAL_CHAR_LIMIT = 3000;
 const SELECT_FIELD_CHAR_LIMIT = 500;
 const ERROR_MESSAGE_CHAR_LIMIT = 600;
-const DEFAULT_CAPTCHA_REFRESH_LIMIT = 2;
+const DEFAULT_LOGIN_RECOVERY_LIMIT = 2;
+const AUTH_WORKER_ENV = 'ALILOG_AUTH_WORKER';
+const AUTH_FOREIGN_ORIGIN_HANDOFF_NOTICE = 'auth: 自动填充已暂停：页面已离开支持的阿里云登录地址。请在浏览器中手动完成登录；成功后仍会自动保存认证。';
 const DEFAULT_QUERY_FETCH_TIMEOUT_MS = 30000;
+const ALILOG_SECRET_KEY_TEXT = '(?:api[-_]?key|totp[-_]?seed)';
+const ALIYUN_LOGIN_SCAN_INTERVAL_MS = 500;
+const ALIYUN_LOGIN_UI_TRANSITION_TIMEOUT_MS = 500;
+const ALIYUN_LOGIN_NETWORK_TRANSITION_TIMEOUT_MS = 3000;
+const SLS_AUTH_CONSOLE_QUERY_TIMEOUT_MS = 15000;
 const DEFAULT_OUTPUT_FIELDS = ['_container_name_', 'message'];
 const DEFAULT_OUTPUT_FIELD_SET = new Set(DEFAULT_OUTPUT_FIELDS);
 const HEADER_FIELD_SET = new Set(['__time__', 'time', '@timestamp', '_container_name_']);
@@ -66,37 +73,45 @@ const FALLBACK_SUMMARY_FIELDS = [
 const SLS_GET_LOGS_INDEX_PATH = '/console/logstoreindex/getLogs.json';
 const SLS_GET_LOGS_FULL_PATH = '/console/logs/getLogs.json';
 const SLS_LOGSTORE_LIST_PATH = '/console/logstore/list.json';
+const SLS_INDEX_CONFIG_PATH = '/console/logstoreindex/getString.json';
+const SLS_INDEX_CONFIG_TOP_LEVEL_OMIT = new Set([
+  'storage',
+  'log_reduce',
+  'log_reduce_white_list',
+  'log_reduce_black_list',
+]);
 const ALIYUN_SIGNIN_SPM_A = 'a2c44';
 const ALIYUN_SIGNIN_SPM_B = '11131515';
 
 // CLI argument policy
 function topLevelUsage() {
   return [
-    'usage: scripts/alilog auth [--project PROJECT --logstore LOGSTORE] [--force-login] [--no-auto-fill] [--timeout SECONDS] [--profile-dir DIR] [--debug]',
+    'usage: scripts/alilog auth [--project PROJECT --logstore LOGSTORE] [--no-auto-fill] [--timeout SECONDS] [--profile-dir DIR] [--debug]',
     '       scripts/alilog query --project PROJECT --logstore LOGSTORE --query QUERY (--time EXPR | --from TIME --to TIME) [--page N] [--size N] [--expand-sql] [--continue INDEX:OFFSET] [--select-fields FIELDS] [--extra-fields FIELDS]',
     '       scripts/alilog fields --project PROJECT --logstore LOGSTORE --query QUERY (--time EXPR | --from TIME --to TIME)',
     '       scripts/alilog logstores --project PROJECT [--keyword KEYWORD] [--page N] [--page-size N]',
+    '       scripts/alilog index-fields --project PROJECT --logstore LOGSTORE',
     '',
     'commands:',
     '  auth       capture SLS auth cookie and CSRF through browser login',
     '  query      query SLS logs or SLS SQL with compact output',
     '  fields     sample logs and list observed fields',
     '  logstores  search logstores in a project',
+    '  index-fields  get the current logstore index configuration',
   ].join('\n');
 }
 
 function authUsage() {
   return [
-    'usage: scripts/alilog auth [--project PROJECT --logstore LOGSTORE] [--force-login] [--no-auto-fill] [--timeout SECONDS] [--profile-dir DIR] [--debug]',
+    'usage: scripts/alilog auth [--project PROJECT --logstore LOGSTORE] [--no-auto-fill] [--timeout SECONDS] [--profile-dir DIR] [--debug]',
     '',
-    'Opens Chrome, waits for Aliyun SLS login, captures auth cookie and CSRF, then writes output/alilog-auth.json.',
+    'Uses automatic Aliyun login in a headless browser when complete supported local credentials are available; otherwise opens Chrome. Captures auth cookie and CSRF into output/alilog-auth.json.',
     'project/logstore are target hints for opening a useful SLS page; missing target still can be a successful auth if cookie and CSRF are captured.',
     '',
     'options:',
     '  --project PROJECT       target hint project; default kuebernetes-production',
     '  --logstore LOGSTORE     target hint logstore; default production',
     '  --no-auto-fill          do not fill local username/password/TOTP',
-    '  --force-login           clear login cookies in the temporary profile first',
     '  --timeout SECONDS       login wait timeout',
     '  --profile-dir DIR       diagnostic only; reuse an explicit Chrome profile dir',
     '  --debug                 print auth lifecycle details without printing secrets',
@@ -146,11 +161,20 @@ function logstoresUsage() {
   ].join('\n');
 }
 
+function indexFieldsUsage() {
+  return [
+    'usage: scripts/alilog index-fields --project PROJECT --logstore LOGSTORE',
+    '',
+    'Returns the current logstore index configuration as compact JSON.',
+  ].join('\n');
+}
+
 function usage(command = '') {
   if (command === 'auth') return authUsage();
   if (command === 'query') return queryUsage();
   if (command === 'fields') return fieldsUsage();
   if (command === 'logstores') return logstoresUsage();
+  if (command === 'index-fields') return indexFieldsUsage();
   return topLevelUsage();
 }
 
@@ -168,7 +192,7 @@ function parseArgs(argv) {
     console.log(usage());
     process.exit(0);
   }
-  if (!['auth', 'query', 'fields', 'logstores'].includes(command)) {
+  if (!['auth', 'query', 'fields', 'logstores', 'index-fields'].includes(command)) {
     throw new Error(`unknown command: ${command}`);
   }
 
@@ -189,12 +213,11 @@ function parseArgs(argv) {
     userFile: DEFAULT_USER_FILE,
     profileDir: '',
     signinDomain: DEFAULT_SIGNIN_DOMAIN,
-    username: process.env.ALILOG_USERNAME || '',
+    username: '',
     keychainService: process.env.ALILOG_KEYCHAIN_SERVICE || DEFAULT_KEYCHAIN_SERVICE,
     totpKeychainService: process.env.ALILOG_TOTP_KEYCHAIN_SERVICE || DEFAULT_TOTP_KEYCHAIN_SERVICE,
     totpInputSelector: process.env.ALILOG_TOTP_INPUT_SELECTOR || '',
     noAutoFill: false,
-    forceLogin: false,
     expandSql: false,
     continueAt: '',
     selectFields: [],
@@ -218,7 +241,6 @@ function parseArgs(argv) {
     if (key === '--timeout' && command === 'auth') { args.timeout = Number(readValue(argv, i, key)); i += 1; continue; }
     if (key === '--profile-dir' && command === 'auth') { args.profileDir = readValue(argv, i, key); i += 1; continue; }
     if (key === '--no-auto-fill' && command === 'auth') { args.noAutoFill = true; continue; }
-    if (key === '--force-login' && command === 'auth') { args.forceLogin = true; continue; }
     if (key === '--debug' && command === 'auth') { args.debug = true; continue; }
     if (key === '--expand-sql' && command === 'query') { args.expandSql = true; continue; }
     if (key === '--continue' && command === 'query') { args.continueAt = readValue(argv, i, key); i += 1; continue; }
@@ -260,6 +282,10 @@ function parseArgs(argv) {
     args.extraFields = args.extraFields.filter((field) => !DEFAULT_OUTPUT_FIELD_SET.has(field));
   }
   if (command === 'logstores' && !args.project) throw new Error('--project is required');
+  if (command === 'index-fields') {
+    if (!args.project) throw new Error('--project is required');
+    if (!args.logstore) throw new Error('--logstore is required');
+  }
 
   return args;
 }
@@ -288,6 +314,8 @@ function parseContinueAt(value) {
 
 async function applyUserConfig(args, dependencies = {}) {
   if (args.command !== 'auth') return args;
+  if (args.noAutoFill) return args;
+  if (!args.username && process.env.ALILOG_USERNAME) args.username = process.env.ALILOG_USERNAME;
   if (args.username) return args;
   const readFile = dependencies.readFile || fs.readFile;
   const readUsername = dependencies.readUsernameFromKeychainAccount || readUsernameFromKeychainAccount;
@@ -464,30 +492,52 @@ function buildSigninUrl(args) {
 function isAliyunLoginUrl(value) {
   try {
     const url = new URL(value);
-    return url.hostname === 'account.aliyun.com' || url.hostname === 'signin.aliyun.com';
+    return url.origin === 'https://account.aliyun.com'
+      || url.origin === 'https://signin.aliyun.com';
   } catch (error) {
     return false;
   }
 }
 
+function classifyAliyunAuthPage(value) {
+  if (isSlsConsoleUrl(value)) return 'sls';
+  if (isAliyunLoginUrl(value)) return 'login';
+  return 'foreign';
+}
+
+async function injectLoginGuidanceOnCurrentLoginPage(page, message) {
+  const pageKind = classifyAliyunAuthPage(page.url());
+  if (pageKind !== 'login') return pageKind;
+  try {
+    await injectLoginGuidanceNotice(page, message);
+  } catch (error) {
+    const currentPageKind = classifyAliyunAuthPage(page.url());
+    if (currentPageKind !== 'login') return currentPageKind;
+    throw error;
+  }
+  return classifyAliyunAuthPage(page.url());
+}
+
 // Browser lifecycle for auth
-async function findPlaywrightModulePath() {
+async function findPlaywrightModulePath(dependencies = {}) {
+  const fileSystem = dependencies.fileSystem || fs;
   const candidates = [];
-  const localPackage = path.join(SKILL_ROOT, 'node_modules', 'playwright', 'package.json');
-  const npxRoot = path.join(os.homedir(), '.npm', '_npx');
+  const localPackage = dependencies.localPackage
+    || path.join(SKILL_ROOT, 'node_modules', 'playwright', 'package.json');
+  const npxRoot = dependencies.npxRoot || path.join(os.homedir(), '.npm', '_npx');
 
   try {
-    const stat = await fs.stat(localPackage);
-    candidates.push({ packagePath: localPackage, mtimeMs: stat.mtimeMs });
+    await fileSystem.stat(localPackage);
+    return path.dirname(localPackage);
   } catch (error) {
   }
 
-  const entries = await fs.readdir(npxRoot, { withFileTypes: true }).catch(() => []);
+  const entries = await fileSystem.readdir(npxRoot, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const packagePath = path.join(npxRoot, entry.name, 'node_modules', 'playwright', 'package.json');
     try {
-      const stat = await fs.stat(packagePath);
+      const stat = await fileSystem.stat(packagePath);
       candidates.push({ packagePath, mtimeMs: stat.mtimeMs });
     } catch (error) {
     }
@@ -500,7 +550,7 @@ async function findPlaywrightModulePath() {
   return path.dirname(candidates[0].packagePath);
 }
 
-async function newBrowserContext(args) {
+async function newBrowserContext(args, headless = false) {
   const playwrightModulePath = await findPlaywrightModulePath();
   const { chromium } = require(playwrightModulePath);
   const tempRoot = args.profileDir ? '' : await fs.mkdtemp(path.join(os.tmpdir(), 'alilog-auth-'));
@@ -509,7 +559,7 @@ async function newBrowserContext(args) {
     await fs.mkdir(profileDir, { recursive: true });
     const context = await chromium.launchPersistentContext(profileDir, {
       channel: 'chrome',
-      headless: false,
+      headless,
       chromiumSandbox: true,
     });
     return { context, tempRoot };
@@ -526,61 +576,76 @@ async function closeBrowserContext(browser) {
   await context.close();
 }
 
-async function cleanupBrowserProfile(browser) {
-  if (!browser || !browser.tempRoot) return;
-  const tempRoot = browser.tempRoot;
-  browser.tempRoot = '';
-  await fs.rm(tempRoot, { recursive: true });
-}
-
-function cleanupBrowserProfileDetached(tempRoot) {
-  if (!tempRoot) return;
-  // 默认临时 profile 是一次性状态；auth 已经写好后，清理不再阻塞命令返回。
-  const child = spawn(process.execPath, [
-    '-e',
-    [
-      "const fs = require('node:fs/promises');",
-      "const os = require('node:os');",
-      "const path = require('node:path');",
-      '',
-      '(async () => {',
-      "  const dir = path.resolve(process.argv[1] || '');",
-      '  const tmp = path.resolve(os.tmpdir());',
-      '  const basename = path.basename(dir);',
-      "  if (!dir.startsWith(tmp + path.sep) || !/^alilog-auth-[^/]+$/.test(basename)) return;",
-      '  const delays = [500, 1000, 2000, 4000, 8000, 8000];',
-      '  for (const delay of delays) {',
-      '    await new Promise((resolve) => setTimeout(resolve, delay));',
-      '    try {',
-      '      await fs.rm(dir, { recursive: true });',
-      '      return;',
-      '    } catch (error) {',
-      '    }',
-      '  }',
-    '})().catch(() => {});',
-    ].join('\n'),
-    tempRoot,
-  ], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.unref();
-}
-
-async function closeAndCleanupBrowser(browser) {
+async function runBrowserCleanupStep(operation, timeoutMs) {
+  let timeoutId;
   try {
-    await closeBrowserContext(browser);
+    return await Promise.race([
+      Promise.resolve().then(operation).then(
+        () => 'completed',
+        () => 'failed',
+      ),
+      new Promise((resolve) => {
+        timeoutId = setTimeout(() => resolve('timed-out'), timeoutMs);
+      }),
+    ]);
   } finally {
-    await cleanupBrowserProfile(browser);
+    clearTimeout(timeoutId);
   }
 }
 
-function closeAndCleanupBrowserDetached(browser) {
+function reportBrowserCleanupEvent(reportEvent, event) {
+  try {
+    const reported = reportEvent(event);
+    if (reported && typeof reported.catch === 'function') reported.catch(() => {});
+  } catch (error) {
+  }
+}
+
+async function disposeBrowserSession(browser, dependencies = {}) {
   if (!browser) return;
-  const tempRoot = browser.tempRoot;
+  const closeContext = dependencies.closeBrowserContext || closeBrowserContext;
+  const removeProfile = dependencies.removeBrowserProfile
+    || ((tempRoot) => fs.rm(tempRoot, { recursive: true }));
+  const cleanupTimeoutMs = dependencies.cleanupTimeoutMs === undefined
+    ? 5000
+    : dependencies.cleanupTimeoutMs;
+  const reportCleanupEvent = dependencies.reportCleanupEvent || (() => {});
+  const tempRoot = browser.tempRoot || '';
   browser.tempRoot = '';
-  closeBrowserContext(browser).catch(() => {});
-  cleanupBrowserProfileDetached(tempRoot);
+  const closeTimeoutMs = tempRoot
+    ? Math.floor(cleanupTimeoutMs * 0.8)
+    : cleanupTimeoutMs;
+  const closeResult = await runBrowserCleanupStep(() => closeContext(browser), closeTimeoutMs);
+  if (closeResult === 'failed') {
+    reportBrowserCleanupEvent(reportCleanupEvent, 'browser cleanup: context close failed');
+  } else if (closeResult === 'timed-out') {
+    reportBrowserCleanupEvent(reportCleanupEvent, 'browser cleanup: context close timed out');
+  }
+  if (!tempRoot) return;
+  const removeResult = await runBrowserCleanupStep(
+    () => removeProfile(tempRoot),
+    Math.max(0, cleanupTimeoutMs - closeTimeoutMs),
+  );
+  if (removeResult === 'failed') {
+    reportBrowserCleanupEvent(reportCleanupEvent, 'browser cleanup: temporary profile removal failed');
+  } else if (removeResult === 'timed-out') {
+    reportBrowserCleanupEvent(reportCleanupEvent, 'browser cleanup: temporary profile removal timed out');
+  }
+}
+
+async function waitForBrowserCleanup(tasks, timeoutMs) {
+  if (!tasks.length) return;
+  let timeoutId;
+  try {
+    await Promise.race([
+      Promise.all(tasks),
+      new Promise((resolve) => {
+        timeoutId = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function writeStdoutLine(line) {
@@ -589,38 +654,74 @@ async function writeStdoutLine(line) {
   });
 }
 
-function debugAuth(args, message) {
+function writeStderrLine(line) {
+  process.stderr.write(`${line}\n`);
+}
+
+function formatAuthDebugTime(includeDate) {
+  const now = new Date(Date.now());
+  const pad = (value) => String(value).padStart(2, '0');
+  const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${String(now.getMilliseconds()).padStart(3, '0')}`;
+  if (!includeDate) return time;
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${time}`;
+}
+
+function debugAuth(args, message, includeDate = false) {
   if (!args.debug) return;
-  console.log(`auth: ${message}`);
+  const line = redactAlilogText(`auth: ${message} ${formatAuthDebugTime(includeDate)}`);
+  if (process.env[AUTH_WORKER_ENV] === '1' && process.connected && typeof process.send === 'function') {
+    try {
+      process.send({ type: 'debug', message: line }, () => {});
+    } catch (error) {
+    }
+    return;
+  }
+  console.log(line);
 }
 
 // Login page navigation and local credential sources
 async function openLoginPage(page, context, args) {
-  if (args.forceLogin) {
-    await clearLoginCookies(context, args);
-  }
   // 直接进入 RAM 登录页，避免先到 SLS 再被阿里云跳转到 account/signin。
   try {
     await page.goto(buildSigninUrl(args), { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
   } catch (error) {
-    throw new Error(`failed to open Aliyun login page: ${error && error.message ? error.message : String(error)}`);
+    throw new Error(`failed to open Aliyun login page: ${externalErrorType(error)}`);
   }
   if (page.url().startsWith(`${SLS_BASE_URL}/lognext/project/`) || page.url().startsWith(`${SLS_BASE_URL}/console/`)) {
     return;
   }
-  if (args.noAutoFill && isAliyunLoginUrl(page.url())) {
-    await injectLoginGuidanceNotice(page, loginManualGuidanceMessage()).catch(() => {});
+  if (args.noAutoFill) {
+    await injectLoginGuidanceOnCurrentLoginPage(page, loginManualGuidanceMessage()).catch(() => {});
   }
 }
 
-async function restartLoginFlowAfterCaptcha(page, args) {
+async function restartAliyunLoginFlow(page, args) {
   await page.goto('about:blank', { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
   await page.goto(buildSigninUrl(args), { timeout: PLAYWRIGHT_OPEN_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
 }
 
-async function clearLoginCookies(context, args) {
-  await context.clearCookies();
-  debugAuth(args, 'cleared cookies');
+function aliyunAutoLoginFeedbackKind(error) {
+  if (!(error instanceof Error)) return '';
+  const match = /^Aliyun auto-login stopped: (captcha|password_rejected|totp_rejected|login_feedback_unrecognized)$/.exec(error.message);
+  return match ? match[1] : '';
+}
+
+function isAliyunAutoLoginRecoverableFeedbackError(error) {
+  return ['captcha', 'login_feedback_unrecognized'].includes(aliyunAutoLoginFeedbackKind(error));
+}
+
+async function runAliyunAutoLoginWithFeedbackRetry(page, args, autoFillPlan, dependencies = {}) {
+  const runAutoLogin = dependencies.runAliyunLoginAutomation || runAliyunLoginAutomation;
+  const restartLogin = dependencies.restartAliyunLoginFlow || restartAliyunLoginFlow;
+
+  try {
+    await runAutoLogin(page, args, { autoFillPlan });
+  } catch (error) {
+    if (!isAliyunAutoLoginRecoverableFeedbackError(error)) throw error;
+    debugAuth(args, `auto-login feedback=${aliyunAutoLoginFeedbackKind(error)}; retrying once`);
+    await restartLogin(page, args);
+    await runAutoLogin(page, args, { autoFillPlan });
+  }
 }
 
 async function readPasswordFromKeychain(args, dependencies = {}) {
@@ -669,20 +770,40 @@ async function readTotpSeedFromKeychain(args, dependencies = {}) {
   }
 }
 
-function normalizeTotpSeed(seed) {
+function parseSupportedTotpSeed(seed) {
   const value = String(seed || '').trim();
+  if (!value) return null;
+  let secret = value;
   if (value.startsWith('otpauth://')) {
-    const url = new URL(value);
-    const secret = url.searchParams.get('secret');
-    if (!secret) throw new Error('otpauth URL is missing secret');
-    return secret;
+    try {
+      const url = new URL(value);
+      if (url.hostname.toLowerCase() !== 'totp') return null;
+      const algorithm = String(url.searchParams.get('algorithm') || 'SHA1').toUpperCase();
+      const digits = Number(url.searchParams.get('digits') || DEFAULT_TOTP_DIGITS);
+      const period = Number(url.searchParams.get('period') || DEFAULT_TOTP_PERIOD_SECONDS);
+      secret = String(url.searchParams.get('secret') || '').trim();
+      if (algorithm !== 'SHA1' || digits !== DEFAULT_TOTP_DIGITS || period !== DEFAULT_TOTP_PERIOD_SECONDS) return null;
+    } catch (error) {
+      return null;
+    }
   }
-  return value;
+  try {
+    decodeBase32(secret);
+    return secret;
+  } catch (error) {
+    return null;
+  }
+}
+
+function normalizeTotpSeed(seed) {
+  const supportedSeed = parseSupportedTotpSeed(seed);
+  if (!supportedSeed) throw new Error('TOTP configuration must use base32 SHA1, 6 digits, and 30 seconds');
+  return supportedSeed;
 }
 
 function decodeBase32(value) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  const cleaned = normalizeTotpSeed(value).toUpperCase().replace(/[\s=-]/g, '');
+  const cleaned = String(value || '').trim().toUpperCase().replace(/[\s=-]/g, '');
   if (!cleaned) throw new Error('empty TOTP seed');
 
   let bits = 0;
@@ -735,11 +856,56 @@ async function prepareAutoFillPlan(args) {
     username: args.username || '',
     password: null,
     totpSeed: null,
+    totpUnsupported: false,
     passwordChecked: false,
     totpChecked: false,
   };
   await refreshAutoFillPlanForUsername(plan, args, plan.username);
   return plan;
+}
+
+function canUseHeadlessAliyunLogin(args, plan) {
+  return !args.noAutoFill
+    && !args.profileDir
+    && Boolean(plan && plan.username && plan.password && plan.totpSeed);
+}
+
+function canAutoFillAliyunLogin(plan) {
+  return Boolean(plan && (plan.username || plan.password || plan.totpSeed));
+}
+
+function selectAliyunAuthMode(args, autoFillPlan, override = {}) {
+  const hasAutomationMode = Object.prototype.hasOwnProperty.call(override, 'automationMode');
+  const hasBrowserMode = Object.prototype.hasOwnProperty.call(override, 'browserMode');
+  if (hasAutomationMode !== hasBrowserMode) {
+    throw new Error('both automationMode and browserMode must be supplied together');
+  }
+  if (args.noAutoFill) {
+    if (hasAutomationMode && (override.automationMode !== 'manual' || override.browserMode !== 'headed')) {
+      throw new Error('--no-auto-fill requires manual headed auth mode');
+    }
+    return { automationMode: 'manual', browserMode: 'headed' };
+  }
+  if (hasAutomationMode) {
+    const selected = {
+      automationMode: override.automationMode,
+      browserMode: override.browserMode,
+    };
+    if (!isSupportedAliyunAuthMode(selected)) throw new Error('unsupported Aliyun auth mode');
+    return selected;
+  }
+  if (canUseHeadlessAliyunLogin(args, autoFillPlan)) {
+    return { automationMode: 'auto-login', browserMode: 'headless' };
+  }
+  return canAutoFillAliyunLogin(autoFillPlan)
+    ? { automationMode: 'auto-fill', browserMode: 'headed' }
+    : { automationMode: 'manual', browserMode: 'headed' };
+}
+
+function isSupportedAliyunAuthMode(mode) {
+  if (mode.automationMode === 'auto-login') return mode.browserMode === 'headed' || mode.browserMode === 'headless';
+  return mode.browserMode === 'headed'
+    && (mode.automationMode === 'auto-fill' || mode.automationMode === 'manual');
 }
 
 async function refreshAutoFillPlanForUsername(plan, args, username) {
@@ -755,7 +921,9 @@ async function refreshAutoFillPlanForUsername(plan, args, username) {
   if (!plan.totpChecked && (process.env.ALILOG_TOTP_SEED || plan.username)) {
     plan.totpChecked = true;
     try {
-      plan.totpSeed = await readTotpSeedFromKeychain({ ...args, username: plan.username });
+      const configuredSeed = await readTotpSeedFromKeychain({ ...args, username: plan.username });
+      plan.totpSeed = parseSupportedTotpSeed(configuredSeed);
+      plan.totpUnsupported = Boolean(configuredSeed && !plan.totpSeed);
     } catch (error) {
       plan.totpSeed = null;
     }
@@ -771,6 +939,7 @@ function isSlsConsoleUrl(value) {
 function createAutoLoginState(args, autoFillPlan) {
   return {
     deadline: Date.now() + args.timeout * 1000,
+    startedAt: Date.now(),
     autoFillPlan,
     username: {
       emptySince: 0,
@@ -788,8 +957,9 @@ function createAutoLoginState(args, autoFillPlan) {
       lastScriptStep: null,
       minRemainingSeconds: 6,
     },
-    captcha: {
+    recoverableFeedback: {
       recoveryCount: 0,
+      pendingNavigationVersion: -1,
     },
     navigationVersion: 0,
     guidanceNotice: {
@@ -809,28 +979,52 @@ function trackMainFrameNavigation(page, state) {
   return () => page.off('framenavigated', onNavigated);
 }
 
-async function handleCaptchaPolicy(page, args, state) {
-  if (!await hasAliyunCaptcha(page)) return 'none';
+function isAliyunHardCredentialFeedbackKind(kind) {
+  return kind === 'password_rejected' || kind === 'totp_rejected';
+}
 
-  if (state.captcha.recoveryCount < DEFAULT_CAPTCHA_REFRESH_LIMIT) {
-    debugAuth(args, 'captcha detected; restarting login flow');
+async function handleHardCredentialFeedback(page, args, feedback) {
+  if (!feedback || !isAliyunHardCredentialFeedbackKind(feedback.kind)) return 'none';
+  debugAuth(args, `login feedback=${feedback.kind}; switched to manual login`);
+  const guidanceMessage = feedback.kind === 'password_rejected'
+    ? loginPasswordRejectedManualGuidanceMessage()
+    : loginTotpRejectedManualGuidanceMessage();
+  const pageKind = await injectLoginGuidanceOnCurrentLoginPage(page, guidanceMessage).catch(() => 'login');
+  if (pageKind !== 'login') return pageKind;
+  debugAuth(args, 'waiting for manual login');
+  return 'manual';
+}
+
+async function handleRecoverableFeedbackPolicy(page, args, state, feedback) {
+  if (!feedback || !['captcha', 'login_feedback_unrecognized'].includes(feedback.kind)) return 'none';
+  const isCaptcha = feedback.kind === 'captcha';
+
+  if (state.recoverableFeedback.recoveryCount < DEFAULT_LOGIN_RECOVERY_LIMIT) {
+    debugAuth(args, isCaptcha ? 'captcha detected; restarting login flow' : 'unrecognized login error detected; restarting login flow');
     try {
-      await restartLoginFlowAfterCaptcha(page, args);
-      state.captcha.recoveryCount += 1;
-      debugAuth(args, `login flow restarted (${state.captcha.recoveryCount}/${DEFAULT_CAPTCHA_REFRESH_LIMIT})`);
+      await restartAliyunLoginFlow(page, args);
+      state.recoverableFeedback.recoveryCount += 1;
+      debugAuth(args, `login flow restarted (${state.recoverableFeedback.recoveryCount}/${DEFAULT_LOGIN_RECOVERY_LIMIT})`);
       return 'restarted';
     } catch (error) {
-      debugAuth(args, `login flow restart failed: ${error && error.message ? error.message : String(error)}`);
-      if (isAliyunLoginUrl(page.url())) {
-        await injectLoginGuidanceNotice(page, loginRestartFailedManualGuidanceMessage()).catch(() => {});
-      }
+      debugAuth(args, `login flow restart failed: ${externalErrorType(error)}`);
+      const restartFailureGuidance = isCaptcha
+        ? loginRestartFailedManualGuidanceMessage()
+        : loginUnrecognizedErrorManualGuidanceMessage();
+      const pageKind = await injectLoginGuidanceOnCurrentLoginPage(page, restartFailureGuidance)
+        .catch(() => 'login');
+      if (pageKind !== 'login') return pageKind;
       debugAuth(args, 'waiting for manual login');
       return 'manual';
     }
   }
 
-  debugAuth(args, 'captcha detected; switched to manual login');
-  await injectLoginGuidanceNotice(page, loginCaptchaManualGuidanceMessage()).catch(() => {});
+  debugAuth(args, `${feedback.kind} detected; switched to manual login`);
+  const guidanceMessage = isCaptcha
+    ? loginCaptchaManualGuidanceMessage()
+    : loginUnrecognizedErrorManualGuidanceMessage();
+  const pageKind = await injectLoginGuidanceOnCurrentLoginPage(page, guidanceMessage).catch(() => 'login');
+  if (pageKind !== 'login') return pageKind;
   debugAuth(args, 'waiting for manual login');
   return 'manual';
 }
@@ -847,6 +1041,8 @@ async function handleUsernamePolicy(page, args, state) {
   if (plannedUsername && !state.username.initialHandled) {
     state.username.initialHandled = true;
     if (normalizedUsername !== plannedUsername) {
+      const pageKind = classifyAliyunAuthPage(page.url());
+      if (pageKind !== 'login') return pageKind;
       await fillInput(usernameInput, plannedUsername);
       debugAuth(args, 'username corrected');
       state.username.emptySince = 0;
@@ -854,6 +1050,8 @@ async function handleUsernamePolicy(page, args, state) {
   } else if (!normalizedUsername) {
     if (!state.username.emptySince) state.username.emptySince = Date.now();
     if (plannedUsername && Date.now() - state.username.emptySince >= state.username.emptyRefillDelayMs) {
+      const pageKind = classifyAliyunAuthPage(page.url());
+      if (pageKind !== 'login') return pageKind;
       await fillInput(usernameInput, plannedUsername);
       debugAuth(args, 'username filled');
       state.username.emptySince = 0;
@@ -874,6 +1072,8 @@ async function handlePasswordPolicy(page, args, state) {
 
   if (!await safeInputValue(passwordInput)) {
     if (state.autoFillPlan.password) {
+      const pageKind = classifyAliyunAuthPage(page.url());
+      if (pageKind !== 'login') return pageKind;
       await fillInput(passwordInput, state.autoFillPlan.password);
       debugAuth(args, 'password filled');
     } else if (!state.credentials.reportedPasswordUnavailable) {
@@ -910,6 +1110,8 @@ async function handleTotpPolicy(page, args, state) {
     && (totp.step !== state.totp.lastScriptStep || totp.remaining_seconds <= state.totp.minRemainingSeconds);
 
   if (!currentTotp || scriptTotpShouldRefresh) {
+    const pageKind = classifyAliyunAuthPage(page.url());
+    if (pageKind !== 'login') return pageKind;
     await fillInput(totpInput, totp.code);
     debugAuth(args, state.totp.lastScriptCode ? 'totp refreshed' : 'totp filled');
     state.totp.lastScriptCode = totp.code;
@@ -936,45 +1138,356 @@ function buildGuidanceState(state) {
   };
 }
 
-async function maybeInjectLoginGuidance(page, currentUrl, state) {
-  if (!isAliyunLoginUrl(currentUrl)) return;
+async function maybeInjectLoginGuidance(page, state) {
   const guidanceMessage = loginAutoFillGuidanceMessage(buildGuidanceState(state));
   if (!shouldInjectLoginGuidanceNotice(state.guidanceNotice, guidanceMessage, state.navigationVersion)) return;
   try {
-    await injectLoginGuidanceNotice(page, guidanceMessage);
+    const pageKind = await injectLoginGuidanceOnCurrentLoginPage(page, guidanceMessage);
+    if (pageKind !== 'login') return pageKind;
     state.guidanceNotice.message = guidanceMessage;
     state.guidanceNotice.navigationVersion = state.navigationVersion;
   } catch (error) {
   }
 }
 
-async function runAutoFillCycle(page, args, state, currentUrl) {
-  const captchaResult = await handleCaptchaPolicy(page, args, state);
-  if (captchaResult === 'restarted' || captchaResult === 'manual') return captchaResult;
+async function runAutoFillCycle(page, args, state) {
+  const feedback = await getAliyunFeedback(page, args);
+  const hardFeedbackResult = await handleHardCredentialFeedback(page, args, feedback);
+  if (hardFeedbackResult !== 'none') return hardFeedbackResult;
 
-  await handleUsernamePolicy(page, args, state);
-  await handlePasswordPolicy(page, args, state);
-  await handleTotpPolicy(page, args, state);
+  if (feedback && ['captcha', 'login_feedback_unrecognized'].includes(feedback.kind)) {
+    if (state.recoverableFeedback.pendingNavigationVersion !== state.navigationVersion) {
+      state.recoverableFeedback.pendingNavigationVersion = state.navigationVersion;
+      return 'pending';
+    }
+    state.recoverableFeedback.pendingNavigationVersion = -1;
+  } else {
+    state.recoverableFeedback.pendingNavigationVersion = -1;
+  }
+  const recoveryResult = await handleRecoverableFeedbackPolicy(page, args, state, feedback);
+  if (recoveryResult !== 'none') return recoveryResult;
+
+  const usernameResult = await handleUsernamePolicy(page, args, state);
+  if (usernameResult) return usernameResult;
+  const passwordResult = await handlePasswordPolicy(page, args, state);
+  if (passwordResult) return passwordResult;
+  const totpResult = await handleTotpPolicy(page, args, state);
+  if (totpResult) return totpResult;
   await updatePhoneCodeRequirement(page, args, state);
-  await maybeInjectLoginGuidance(page, currentUrl, state);
+  const guidanceResult = await maybeInjectLoginGuidance(page, state);
+  if (guidanceResult) return guidanceResult;
   return 'continue';
 }
 
-async function autoLoginAliyun(page, args) {
-  const state = createAutoLoginState(args, await prepareAutoFillPlan(args));
+async function clickFirstVisibleAliyunAction(page, names) {
+  if (!page || typeof page.getByRole !== 'function') return false;
+  for (const name of names) {
+    const locator = page.getByRole('button', { name }).first();
+    try {
+      if (!await locator.isVisible({ timeout: 100 })) continue;
+      const pageKind = classifyAliyunAuthPage(page.url());
+      if (pageKind === 'sls') return 'sls';
+      if (pageKind === 'foreign') throw new Error('Aliyun auto-login stopped: foreign_origin');
+      await locator.click({ timeout: 1500 });
+      return true;
+    } catch (error) {
+      if (error && error.message === 'Aliyun auto-login stopped: foreign_origin') throw error;
+    }
+  }
+  return false;
+}
+
+async function clickFirstVisibleAliyunText(page, patterns) {
+  if (!page || typeof page.getByText !== 'function') return false;
+  for (const pattern of patterns) {
+    const locator = page.getByText(pattern).first();
+    try {
+      if (!await locator.isVisible({ timeout: 100 })) continue;
+      const pageKind = classifyAliyunAuthPage(page.url());
+      if (pageKind === 'sls') return 'sls';
+      if (pageKind === 'foreign') throw new Error('Aliyun auto-login stopped: foreign_origin');
+      await locator.click({ timeout: 1500 });
+      return true;
+    } catch (error) {
+      if (error && error.message === 'Aliyun auto-login stopped: foreign_origin') throw error;
+    }
+  }
+  return false;
+}
+
+function autoLoginActionForState(loginState) {
+  const actions = {
+    username: { action: 'next', wait: 'network', expected: ['password-choice', 'password'] },
+    'password-choice': { action: 'password-mode', wait: 'ui', expected: ['password'] },
+    password: { action: 'password-submit', wait: 'network', expected: ['virtual-mfa', 'totp', 'sls-console'] },
+    'virtual-mfa': { action: 'virtual-mfa', wait: 'ui', expected: ['totp'] },
+    totp: { action: 'totp-submit', wait: 'network', expected: ['sls-console'] },
+  };
+  return actions[loginState] || null;
+}
+
+async function isAliyunTextVisible(page, patterns) {
+  if (!page || typeof page.getByText !== 'function') return false;
+  for (const pattern of patterns) {
+    try {
+      if (await page.getByText(pattern).first().isVisible({ timeout: 100 })) return true;
+    } catch (error) {
+    }
+  }
+  return false;
+}
+
+async function inspectAliyunLoginState(page, args) {
+  const pageKind = classifyAliyunAuthPage(page.url());
+  if (pageKind === 'sls') return { kind: 'sls-console' };
+  if (pageKind === 'foreign') return { kind: 'foreign-origin' };
+  const feedback = await getAliyunFeedback(page, args);
+  if (feedback) return { kind: 'feedback', feedback };
+
+  const username = await findFirstVisibleLocatorNow(page, usernameInputSelectors());
+  if (username) return { kind: 'username', input: username };
+  const password = await findFirstVisibleLocatorNow(page, passwordInputSelectors());
+  if (password) return { kind: 'password', input: password };
+  const totp = await findFirstVisibleLocatorNow(page, totpInputSelectors(args));
+  if (totp) return { kind: 'totp', input: totp };
+  if (await isAliyunTextVisible(page, [/虚拟\s*MFA/i, /Virtual\s*MFA/i])) return { kind: 'virtual-mfa' };
+  if (await isAliyunTextVisible(page, [/使用密码登录/, /Password login/i])) return { kind: 'password-choice' };
+  return { kind: 'unknown' };
+}
+
+async function fillAliyunLoginInput(page, loginState, args, state) {
+  const input = loginState.input;
+  if (!input) return;
+
+  if (loginState.kind === 'username') {
+    if (!state.autoFillPlan.username) throw new Error('Aliyun auto-login stopped: username_unavailable');
+    if (String(await safeInputValue(input) || '').trim() !== String(state.autoFillPlan.username).trim()) {
+      const pageKind = classifyAliyunAuthPage(page.url());
+      if (pageKind === 'sls') return 'sls';
+      if (pageKind === 'foreign') throw new Error('Aliyun auto-login stopped: foreign_origin');
+      await fillInput(input, state.autoFillPlan.username);
+      debugAuth(args, 'username filled');
+    }
+    return;
+  }
+
+  if (loginState.kind === 'password') {
+    if (!state.autoFillPlan.password) throw new Error('Aliyun auto-login stopped: password_unavailable');
+    if (!await safeInputValue(input)) {
+      const pageKind = classifyAliyunAuthPage(page.url());
+      if (pageKind === 'sls') return 'sls';
+      if (pageKind === 'foreign') throw new Error('Aliyun auto-login stopped: foreign_origin');
+      await fillInput(input, state.autoFillPlan.password);
+      debugAuth(args, 'password filled');
+    }
+    return;
+  }
+
+  if (loginState.kind === 'totp') {
+    if (!state.autoFillPlan.totpSeed) throw new Error('Aliyun auto-login stopped: totp_unavailable');
+    let totp = generateTotp(state.autoFillPlan.totpSeed);
+    if (totp.remaining_seconds <= state.totp.minRemainingSeconds) {
+      await page.waitForTimeout((totp.remaining_seconds + 1) * 1000);
+      totp = generateTotp(state.autoFillPlan.totpSeed);
+    }
+    const pageKind = classifyAliyunAuthPage(page.url());
+    if (pageKind === 'sls') return 'sls';
+    if (pageKind === 'foreign') throw new Error('Aliyun auto-login stopped: foreign_origin');
+    await fillInput(input, totp.code);
+    state.totp.lastScriptCode = totp.code;
+    state.totp.lastScriptStep = totp.step;
+    debugAuth(args, 'totp filled');
+  }
+}
+
+async function shouldFillAliyunLoginInput(page, loginState, state) {
+  const input = loginState.input;
+  if (!input) return false;
+
+  if (loginState.kind === 'username') {
+    if (!state.autoFillPlan.username) throw new Error('Aliyun auto-login stopped: username_unavailable');
+    return String(await safeInputValue(input) || '').trim() !== String(state.autoFillPlan.username).trim();
+  }
+  if (loginState.kind === 'password') {
+    if (!state.autoFillPlan.password) throw new Error('Aliyun auto-login stopped: password_unavailable');
+    return !await safeInputValue(input);
+  }
+  if (loginState.kind === 'totp') {
+    if (!state.autoFillPlan.totpSeed) throw new Error('Aliyun auto-login stopped: totp_unavailable');
+    return true;
+  }
+  return false;
+}
+
+function autoLoginPacingRange(operation) {
+  if (operation === 'credential-fill' || operation === 'password-mode' || operation === 'virtual-mfa') return [400, 800];
+  if (operation === 'next' || operation === 'password-submit') return [1000, 2000];
+  if (operation === 'totp-submit') return [800, 1000];
+  throw new Error(`unsupported auto-login pacing operation: ${operation}`);
+}
+
+function chooseAliyunAutoLoginDelay(minimum, maximum) {
+  return crypto.randomInt(minimum, maximum + 1);
+}
+
+async function waitForAliyunLoginPacing(page, args, state, operation) {
+  const [minimum, maximum] = autoLoginPacingRange(operation);
+  const delayMs = state.delayChooser(operation, minimum, maximum);
+  debugAuth(args, `auto-login pacing operation=${operation} delay_ms=${delayMs} elapsed_ms=${Date.now() - state.startedAt}`);
+  await page.waitForTimeout(delayMs);
+  return inspectAliyunLoginState(page, args);
+}
+
+async function clickAliyunLoginAction(page, action) {
+  if (action === 'next') return clickFirstVisibleAliyunAction(page, [/^下一步$/, /^Next$/i]);
+  if (action === 'password-mode') return clickFirstVisibleAliyunText(page, [/使用密码登录/, /Password login/i]);
+  if (action === 'password-submit') return clickFirstVisibleAliyunAction(page, [/^登录$/, /^Log in$/i]);
+  if (action === 'virtual-mfa') return clickFirstVisibleAliyunText(page, [/虚拟\s*MFA/i, /Virtual\s*MFA/i]);
+  if (action === 'totp-submit') return clickFirstVisibleAliyunAction(page, [/^提交验证$/, /^Submit verification$/i]);
+  return false;
+}
+
+async function waitForAliyunLoginTransition(page, args, previousState, action) {
+  const timeoutMs = action.wait === 'ui'
+    ? ALIYUN_LOGIN_UI_TRANSITION_TIMEOUT_MS
+    : ALIYUN_LOGIN_NETWORK_TRANSITION_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  let recoverableFeedback = null;
+
+  do {
+    await page.waitForTimeout(Math.min(ALIYUN_LOGIN_SCAN_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+    const nextState = await inspectAliyunLoginState(page, args);
+    if (nextState.kind === 'feedback') {
+      if (isAliyunHardCredentialFeedbackKind(nextState.feedback.kind)) return nextState;
+      if (nextState.feedback.kind === 'login_feedback_unrecognized' || !recoverableFeedback) {
+        recoverableFeedback = nextState;
+      }
+      continue;
+    }
+    if (action.expected.includes(nextState.kind)) return nextState;
+    if (nextState.kind !== 'unknown' && nextState.kind !== previousState.kind) return nextState;
+  } while (Date.now() < deadline);
+
+  return recoverableFeedback || { kind: 'transition-timeout' };
+}
+
+async function waitForInitialAliyunLoginState(page, args, stateDeadline) {
+  const deadline = Math.min(Date.now() + ALIYUN_LOGIN_NETWORK_TRANSITION_TIMEOUT_MS, stateDeadline);
+  do {
+    const loginState = await inspectAliyunLoginState(page, args);
+    if (loginState.kind !== 'unknown') return loginState;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await page.waitForTimeout(Math.min(ALIYUN_LOGIN_SCAN_INTERVAL_MS, remaining));
+  } while (Date.now() < deadline);
+
+  return { kind: 'unknown' };
+}
+
+async function runAliyunAutoLoginStateMachine(page, args, state) {
+  let loginState = await waitForInitialAliyunLoginState(page, args, state.deadline);
+
+  debugAuth(args, 'auto-login state machine started');
+  while (Date.now() < state.deadline) {
+    if (loginState.kind === 'sls-console') return;
+    if (loginState.kind === 'foreign-origin') throw new Error('Aliyun auto-login stopped: foreign_origin');
+    if (loginState.kind === 'feedback') throw aliyunLoginFeedbackError(args, loginState.feedback);
+    if (loginState.kind === 'unknown') throw new Error('Aliyun auto-login stopped: unexpected_state');
+
+    let action = autoLoginActionForState(loginState.kind);
+    if (!action) throw new Error(`Aliyun auto-login stopped: unsupported_state_${loginState.kind}`);
+
+    if (await shouldFillAliyunLoginInput(page, loginState, state)) {
+      const pacedState = await waitForAliyunLoginPacing(page, args, state, 'credential-fill');
+      if (pacedState.kind !== loginState.kind) {
+        loginState = pacedState;
+        continue;
+      }
+      loginState = pacedState;
+      if (!await shouldFillAliyunLoginInput(page, loginState, state)) continue;
+      const fillResult = await fillAliyunLoginInput(page, loginState, args, state);
+      if (fillResult === 'sls') return;
+    }
+
+    const pacedState = await waitForAliyunLoginPacing(page, args, state, action.action);
+    if (pacedState.kind !== loginState.kind) {
+      loginState = pacedState;
+      continue;
+    }
+    loginState = pacedState;
+    action = autoLoginActionForState(loginState.kind);
+    if (!action) continue;
+    const clickResult = await clickAliyunLoginAction(page, action.action);
+    if (clickResult === 'sls') return;
+    if (!clickResult) {
+      throw new Error(`Aliyun auto-login stopped: action_unavailable_${action.action}`);
+    }
+    debugAuth(args, `auto-login clicked ${action.action}`);
+
+    const nextState = await waitForAliyunLoginTransition(page, args, loginState, action);
+    if (nextState.kind === 'feedback') throw aliyunLoginFeedbackError(args, nextState.feedback);
+    if (nextState.kind === 'foreign-origin') throw new Error('Aliyun auto-login stopped: foreign_origin');
+    if (nextState.kind === 'transition-timeout') throw new Error(`Aliyun auto-login stopped: ${action.action}_timeout`);
+    if (!action.expected.includes(nextState.kind)) {
+      throw new Error(`Aliyun auto-login stopped: unexpected_state_${nextState.kind}`);
+    }
+    loginState = nextState;
+  }
+
+  throw new Error('Aliyun auto-login stopped: login_timeout');
+}
+
+function aliyunLoginFeedbackError(args, feedback) {
+  debugAuth(args, `auto-login feedback: ${feedback.message || feedback.kind}`);
+  return new Error(`Aliyun auto-login stopped: ${feedback.kind}`);
+}
+
+async function runAliyunLoginAutomation(page, args, options = {}) {
+  const state = createAutoLoginState(args, options.autoFillPlan || await prepareAutoFillPlan(args));
+  state.delayChooser = options.delayChooser
+    || ((operation, minimum, maximum) => chooseAliyunAutoLoginDelay(minimum, maximum));
+  await runAliyunAutoLoginStateMachine(page, args, state);
+}
+
+async function runAliyunAutoFillMonitor(page, args, options = {}) {
+  const state = createAutoLoginState(args, options.autoFillPlan || await prepareAutoFillPlan(args));
   const stopNavigationTracking = trackMainFrameNavigation(page, state);
+  let handoffNoticeSent = false;
+
+  async function reportForeignOriginHandoff() {
+    if (handoffNoticeSent) return;
+    handoffNoticeSent = true;
+    if (typeof options.reportNotice !== 'function') return;
+    try {
+      await options.reportNotice(AUTH_FOREIGN_ORIGIN_HANDOFF_NOTICE);
+    } catch (error) {
+    }
+  }
 
   debugAuth(args, 'auto-fill monitor started');
+  if (state.autoFillPlan.totpUnsupported) {
+    debugAuth(args, 'TOTP configuration unsupported; treating as unavailable');
+  }
 
   try {
     while (Date.now() < state.deadline) {
-      const currentUrl = page.url();
-      if (isSlsConsoleUrl(currentUrl)) return;
+      const pageKind = classifyAliyunAuthPage(page.url());
+      if (pageKind === 'sls') return;
+      if (pageKind === 'foreign') {
+        await reportForeignOriginHandoff();
+        return;
+      }
 
-      const cycleResult = await runAutoFillCycle(page, args, state, currentUrl);
-      if (cycleResult === 'manual') return;
+      const cycleResult = await runAutoFillCycle(page, args, state);
+      if (cycleResult === 'sls') return;
+      if (cycleResult === 'foreign') {
+        await reportForeignOriginHandoff();
+        return;
+      }
+      if (cycleResult === 'manual') {
+        return;
+      }
       if (cycleResult === 'restarted') continue;
-
       await page.waitForTimeout(state.pollMs);
     }
   } finally {
@@ -988,18 +1501,32 @@ function shouldInjectLoginGuidanceNotice(state, message, navigationVersion) {
   return state.message !== message || state.navigationVersion !== navigationVersion;
 }
 
-// Captcha detection policy
-async function hasAliyunCaptcha(page) {
+// 登录反馈检测只消费页面中可见、明确的阿里云控件，避免用整页文本猜测状态。
+async function getAliyunFeedback(page, args = {}) {
   const frames = typeof page.frames === 'function' ? page.frames() : [page];
+  const mainFrame = typeof page.mainFrame === 'function' ? page.mainFrame() : page;
+  let captchaFeedback = null;
+  let unknownErrorFeedback = null;
   for (const frame of frames) {
     try {
-      if (await frame.evaluate((detectorSource) => {
+      if (frame !== mainFrame && typeof frame.frameElement === 'function') {
+        const frameElement = await frame.frameElement();
+        if (frameElement && typeof frameElement.isVisible === 'function' && !await frameElement.isVisible()) continue;
+        if (frameElement && typeof frameElement.evaluate === 'function') {
+          const hiddenByAria = await frameElement.evaluate((element) => Boolean(element.closest('[aria-hidden="true"]')));
+          if (hiddenByAria) continue;
+        }
+      }
+      const feedback = await frame.evaluate((detectorSource) => {
         const detector = (0, eval)(`(${detectorSource})`);
 
         function isVisible(element) {
           if (!element) return false;
-          const style = window.getComputedStyle(element);
-          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+          for (let current = element; current; current = current.parentElement) {
+            if (current.getAttribute && current.getAttribute('aria-hidden') === 'true') return false;
+            const style = window.getComputedStyle(current);
+            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+          }
           const rect = element.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0;
         }
@@ -1020,14 +1547,61 @@ async function hasAliyunCaptcha(page) {
         }
 
         return detector(document, isVisible, elementText, elementHref);
-      }, detectAliyunCaptchaInDocument.toString())) return true;
+      }, detectAliyunFeedbackInDocument.toString());
+      if (feedback && isAliyunHardCredentialFeedbackKind(feedback.kind)) return feedback;
+      if (feedback && feedback.kind === 'login_feedback_unrecognized') unknownErrorFeedback = feedback;
+      if (feedback && feedback.kind === 'captcha') captchaFeedback = feedback;
     } catch (error) {
+      if (isAliyunFrameNavigationError(error)) continue;
+      debugAuth(args, `frame feedback scan failed: ${externalErrorType(error)}`);
     }
   }
-  return false;
+  return captchaFeedback || unknownErrorFeedback;
 }
 
-function detectAliyunCaptchaInDocument(document, isVisible, elementText, elementHref) {
+function isAliyunFrameNavigationError(error) {
+  return /execution context (?:was )?(?:destroyed|lost)/i.test(String(error && error.message ? error.message : ''));
+}
+
+function externalErrorType(error) {
+  const name = String(error && error.name ? error.name : '');
+  return [
+    'AbortError',
+    'Error',
+    'RangeError',
+    'ReferenceError',
+    'SyntaxError',
+    'TimeoutError',
+    'TypeError',
+  ].includes(name) ? name : 'Error';
+}
+
+function authDebugFailureSummary(error) {
+  const message = String(error && error.message ? error.message : '');
+  const internalFailure = /^Aliyun auto-login stopped: ([a-z][a-z_-]*)$/.exec(message);
+  return internalFailure ? message : externalErrorType(error);
+}
+
+async function hasAliyunCaptcha(page, args = {}) {
+  const feedback = await getAliyunFeedback(page, args);
+  return Boolean(feedback && feedback.kind === 'captcha');
+}
+
+function detectAliyunFeedbackInDocument(document, isVisible, elementText, elementHref) {
+  function isCurrentVisible(element) {
+    if (!isVisible(element)) return false;
+    return !(typeof element.closest === 'function' && element.closest('[aria-hidden="true"]'));
+  }
+
+  const errorAlerts = document.querySelectorAll('[role="alert"].next-message-error');
+  let unknownErrorFeedback = null;
+  for (const errorAlert of errorAlerts) {
+    if (!isCurrentVisible(errorAlert)) continue;
+    const alertText = elementText(errorAlert).replace(/\s+/g, ' ').trim();
+    if (alertText.includes('用户名或密码错误')) return { kind: 'password_rejected' };
+    if (alertText.includes('安全码错误')) return { kind: 'totp_rejected' };
+    unknownErrorFeedback = { kind: 'login_feedback_unrecognized' };
+  }
   const captchaElements = [
     document.querySelector('#nocaptcha.nc-container'),
     document.querySelector('#nocaptcha .nc_wrapper'),
@@ -1038,7 +1612,7 @@ function detectAliyunCaptchaInDocument(document, isVisible, elementText, element
   ].filter(Boolean);
 
   for (const element of captchaElements) {
-    if (isVisible(element)) return true;
+    if (isCurrentVisible(element)) return { kind: 'captcha' };
   }
 
   const captchaFrame = document.querySelector('iframe#baxia-dialog-content')
@@ -1047,22 +1621,27 @@ function detectAliyunCaptchaInDocument(document, isVisible, elementText, element
     || document.querySelector('iframe[src*="action=captcha"]')
     || document.querySelector('iframe[src*="pureCaptcha=true"]');
   const frameSrc = elementHref(captchaFrame);
-  if (isVisible(captchaFrame) && (
+  if (isCurrentVisible(captchaFrame) && (
     frameSrc.includes('x5secdata')
     || frameSrc.includes('_____tmd_____')
     || frameSrc.includes('action=captcha')
     || frameSrc.includes('pureCaptcha=true')
   )) {
-    return true;
+    return { kind: 'captcha' };
   }
 
   const feedbackButton = document.querySelector('.bx-pu-qrcode-wrap #bx-feedback-btn');
   const href = elementHref(feedbackButton);
-  if (isVisible(feedbackButton) && (href.includes('x5secdata') || href.includes('_____tmd_____'))) {
-    return true;
+  if (isCurrentVisible(feedbackButton) && (href.includes('x5secdata') || href.includes('_____tmd_____'))) {
+    return { kind: 'captcha' };
   }
 
-  return false;
+  return unknownErrorFeedback;
+}
+
+function detectAliyunCaptchaInDocument(document, isVisible, elementText, elementHref) {
+  const feedback = detectAliyunFeedbackInDocument(document, isVisible, elementText, elementHref);
+  return Boolean(feedback && feedback.kind === 'captcha');
 }
 
 function loginAutoFillGuidanceMessage(state = {}) {
@@ -1110,10 +1689,36 @@ function loginCaptchaManualGuidanceMessage() {
   ].join('\n');
 }
 
+function loginPasswordRejectedManualGuidanceMessage() {
+  return [
+    '账号或密码错误，自动填充已停止。请选择一种处理方式：',
+    '',
+    '1. 手动登录：在当前窗口完成登录。',
+    '2. 修正自动登录：关闭当前窗口，检查账号并更新 Keychain 密码，然后重新运行 scripts/alilog auth。',
+  ].join('\n');
+}
+
+function loginTotpRejectedManualGuidanceMessage() {
+  return [
+    '安全码错误，自动填充已停止；保存的 TOTP seed 可能不正确。请选择一种处理方式：',
+    '',
+    '1. 手动登录：在当前窗口完成登录。',
+    '2. 修正自动登录：关闭当前窗口，更新 alilog-totp 中的 TOTP seed，然后重新运行 scripts/alilog auth。',
+  ].join('\n');
+}
+
 function loginRestartFailedManualGuidanceMessage() {
   return [
     '检测到阿里云滑块验证，但自动重开登录页失败。',
     '已停止自动填充，请手动刷新或打开阿里云登录页并完整登录。',
+    '登录成功后脚本会继续保存 SLS 登录态；不要关闭此窗口。',
+  ].join('\n');
+}
+
+function loginUnrecognizedErrorManualGuidanceMessage() {
+  return [
+    '阿里云登录页持续返回无法识别的错误，自动恢复已停止。',
+    '请在当前页面手动完成登录；如页面无法继续，请重新运行 scripts/alilog auth。',
     '登录成功后脚本会继续保存 SLS 登录态；不要关闭此窗口。',
   ].join('\n');
 }
@@ -1133,15 +1738,15 @@ async function injectLoginGuidanceNotice(page, message) {
       notice.style.width = '470px';
       notice.style.maxWidth = 'calc(100% - 32px)';
       notice.style.zIndex = '2147483646';
-      notice.style.padding = '16px 18px 16px 20px';
+      notice.style.padding = '13px 14px';
       notice.style.background = '#fff4cc';
-      notice.style.border = '2px solid #f59e0b';
-      notice.style.borderLeft = '9px solid #ea580c';
+      notice.style.border = '1px solid #f59e0b';
+      notice.style.borderLeft = '4px solid #ea580c';
       notice.style.borderRadius = '8px';
       notice.style.color = '#332100';
-      notice.style.fontSize = '17px';
-      notice.style.lineHeight = '27px';
-      notice.style.fontWeight = '750';
+      notice.style.fontSize = '15px';
+      notice.style.lineHeight = '22px';
+      notice.style.fontWeight = '600';
       notice.style.whiteSpace = 'pre-line';
       notice.style.boxShadow = '0 12px 30px rgba(71, 42, 0, 0.24)';
       notice.style.boxSizing = 'border-box';
@@ -1264,12 +1869,63 @@ function buildLogstoresRequest(args) {
   return url.toString();
 }
 
+function buildIndexFieldsRequest(args) {
+  const url = new URL(`${SLS_BASE_URL}${SLS_INDEX_CONFIG_PATH}`);
+  url.searchParams.set('ProjectName', args.project);
+  url.searchParams.set('LogStoreName', args.logstore);
+  return url.toString();
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function pruneIndexConfigValue(value) {
+  if (Array.isArray(value)) return value.map(pruneIndexConfigValue);
+  if (!isPlainObject(value)) return value;
+  const result = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (child === '' || child === null) continue;
+    Object.defineProperty(result, key, {
+      value: pruneIndexConfigValue(child),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return result;
+}
+
+function parseIndexFieldsResponse(payload) {
+  if (!isPlainObject(payload) || payload.success !== true) {
+    throw new Error('index request failed: success=false');
+  }
+  let config = payload.data;
+  if (typeof config === 'string') {
+    try {
+      config = JSON.parse(config);
+    } catch (error) {
+      throw new Error('invalid index response: data is not valid JSON');
+    }
+  }
+  if (!isPlainObject(config)) {
+    throw new Error('invalid index response: data must be an object');
+  }
+  const result = pruneIndexConfigValue(config);
+  for (const key of SLS_INDEX_CONFIG_TOP_LEVEL_OMIT) delete result[key];
+  return result;
+}
+
 function buildCookieHeader(cookies) {
   return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
 }
 
 // Query auth file and SLS request
-async function writeAuthFile(args, page, context, csrfToken) {
+async function writeAuthFile(args, page, context, csrfToken, dependencies = {}) {
+  const fileSystem = dependencies.fileSystem || fs;
+  const randomUuid = dependencies.randomUUID || crypto.randomUUID;
   const cookies = await context.cookies(SLS_BASE_URL);
   const cookieHeader = buildCookieHeader(cookies);
   if (!cookieHeader) throw new Error('failed to collect Aliyun SLS cookies');
@@ -1284,9 +1940,26 @@ async function writeAuthFile(args, page, context, csrfToken) {
     csrf_token: csrfToken,
     cookie_names: cookies.map((cookie) => cookie.name),
   };
-  await fs.mkdir(path.dirname(args.authFile), { recursive: true });
-  await fs.writeFile(args.authFile, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-  await fs.chmod(args.authFile, 0o600).catch(() => {});
+  const authDirectory = path.dirname(args.authFile);
+  const tempFile = path.join(
+    authDirectory,
+    `.${path.basename(args.authFile)}.${process.pid}.${randomUuid()}.tmp`,
+  );
+  let fileHandle;
+  try {
+    await fileSystem.mkdir(authDirectory, { recursive: true });
+    fileHandle = await fileSystem.open(tempFile, 'wx', 0o600);
+    await fileHandle.chmod(0o600);
+    await fileHandle.writeFile(`${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    await fileHandle.close();
+    fileHandle = null;
+    await fileSystem.rename(tempFile, args.authFile);
+    return payload;
+  } catch (error) {
+    if (fileHandle) await fileHandle.close().catch(() => {});
+    await fileSystem.rm(tempFile, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 async function readAuthFile(args) {
@@ -1302,10 +1975,12 @@ async function readAuthFile(args) {
   return payload;
 }
 
-async function queryLogsWithAuthFile(args) {
-  const auth = await readAuthFile(args);
+async function queryLogsWithAuthFile(args, dependencies = {}) {
+  const loadAuth = dependencies.readAuthFile || readAuthFile;
+  const requestWithTimeout = dependencies.fetchWithTimeout || fetchWithTimeout;
+  const auth = await loadAuth(args);
   const request = buildQueryBody(args);
-  const response = await fetchWithTimeout(`${SLS_BASE_URL}${SLS_GET_LOGS_INDEX_PATH}`, {
+  const response = await requestWithTimeout(`${SLS_BASE_URL}${SLS_GET_LOGS_INDEX_PATH}`, {
     method: 'POST',
     headers: {
       accept: 'application/json',
@@ -1317,16 +1992,38 @@ async function queryLogsWithAuthFile(args) {
     },
     body: request.body,
   });
+  if (response.status === 401 || response.status === 403) {
+    throw new Error('auth expired or invalid; run scripts/alilog auth');
+  }
+  const command = args.command === 'fields' ? 'fields' : 'query';
   const text = await response.text();
   let payload = null;
   try {
-    payload = text ? JSON.parse(text) : null;
+    payload = JSON.parse(text);
   } catch (error) {
-    payload = { parse_error: error.message, text };
+    if (!response.ok) {
+      throw new Error(`${command} request failed: status=${response.status}`);
+    }
+    throw new Error(`invalid ${command} response: response is not valid JSON`);
   }
-  const code = payload && payload.code ? String(payload.code) : '';
-  if (response.status === 401 || response.status === 403 || code === 'ConsoleNeedLogin') {
-    throw new Error(`auth expired or invalid (${code || response.status}); run scripts/alilog auth`);
+  if (isPlainObject(payload)
+    && (String(payload.code || '') === 'ConsoleNeedLogin'
+      || String(payload.message || '') === 'ConsoleNeedLogin')) {
+    throw new Error('auth expired or invalid; run scripts/alilog auth');
+  }
+  if (!response.ok) {
+    throw new Error(`${command} request failed: status=${response.status}`);
+  }
+  if (!isPlainObject(payload)) {
+    throw new Error(`invalid ${command} response: response must be an object`);
+  }
+  if (payload.success === false) {
+    const code = payload.code === undefined ? '' : ` code=${compactDisplayText(payload.code)}`;
+    const message = payload.message === undefined ? '' : ` message=${formatErrorMessage(payload.message)}`;
+    throw new Error(redactAlilogText(`${command} request failed:${code}${message}`));
+  }
+  if (payload.success !== true) {
+    throw new Error(`invalid ${command} response: success must be true`);
   }
   return {
     scope: request.scope,
@@ -1338,9 +2035,11 @@ async function queryLogsWithAuthFile(args) {
   };
 }
 
-async function listLogstoresWithAuthFile(args) {
-  const auth = await readAuthFile(args);
-  const response = await fetchWithTimeout(buildLogstoresRequest(args), {
+async function listLogstoresWithAuthFile(args, dependencies = {}) {
+  const loadAuth = dependencies.readAuthFile || readAuthFile;
+  const requestWithTimeout = dependencies.fetchWithTimeout || fetchWithTimeout;
+  const auth = await loadAuth(args);
+  const response = await requestWithTimeout(buildLogstoresRequest(args), {
     method: 'GET',
     headers: {
       accept: 'application/json',
@@ -1348,21 +2047,87 @@ async function listLogstoresWithAuthFile(args) {
       referer: auth.referer || `${SLS_BASE_URL}/`,
     },
   });
+  if (response.status === 401 || response.status === 403) {
+    throw new Error('auth expired or invalid; run scripts/alilog auth');
+  }
   const text = await response.text();
   let payload = null;
   try {
-    payload = text ? JSON.parse(text) : null;
+    payload = JSON.parse(text);
   } catch (error) {
-    payload = { parse_error: error.message, text };
+    if (!response.ok) {
+      throw new Error(`logstores request failed: status=${response.status}`);
+    }
+    throw new Error('invalid logstores response: response is not valid JSON');
   }
-  const code = payload && payload.code ? String(payload.code) : '';
-  if (response.status === 401 || response.status === 403 || code === 'ConsoleNeedLogin') {
-    throw new Error(`auth expired or invalid (${code || response.status}); run scripts/alilog auth`);
+  if (isPlainObject(payload)
+    && (String(payload.code || '') === 'ConsoleNeedLogin'
+      || String(payload.message || '') === 'ConsoleNeedLogin')) {
+    throw new Error('auth expired or invalid; run scripts/alilog auth');
   }
   if (!response.ok) {
     throw new Error(`logstores request failed: status=${response.status}`);
   }
+  if (!isPlainObject(payload)) {
+    throw new Error('invalid logstores response: response must be an object');
+  }
+  if (payload.success === false) {
+    const code = payload.code === undefined ? '' : ` code=${compactDisplayText(payload.code)}`;
+    const message = payload.message === undefined ? '' : ` message=${formatErrorMessage(payload.message)}`;
+    throw new Error(redactAlilogText(`logstores request failed:${code}${message}`));
+  }
+  if (payload.success !== true) {
+    throw new Error('invalid logstores response: success must be true');
+  }
   return payload;
+}
+
+function isIndexAuthFailure(response, payload) {
+  if (response.status === 401 || response.status === 403) return true;
+  if (!isPlainObject(payload)) return false;
+  return String(payload.code || '') === 'ConsoleNeedLogin'
+    || String(payload.message || '') === 'ConsoleNeedLogin';
+}
+
+async function getIndexFieldsWithAuthFile(args, dependencies = {}) {
+  const loadAuth = dependencies.readAuthFile || readAuthFile;
+  const request = dependencies.fetchWithTimeout || fetchWithTimeout;
+  let auth;
+  try {
+    auth = await loadAuth(args);
+  } catch (error) {
+    throw new Error('auth expired or invalid; run scripts/alilog auth');
+  }
+  const response = await request(buildIndexFieldsRequest(args), {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      cookie: auth.cookie,
+      referer: auth.referer || `${SLS_BASE_URL}/`,
+      'x-csrf-token': auth.csrf_token,
+    },
+  });
+  const text = await response.text();
+  if (response.status === 401 || response.status === 403) {
+    throw new Error('auth expired or invalid; run scripts/alilog auth');
+  }
+  let payload;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch (error) {
+    throw new Error('invalid index response: response is not valid JSON');
+  }
+  if (isIndexAuthFailure(response, payload)) {
+    throw new Error('auth expired or invalid; run scripts/alilog auth');
+  }
+  if (!response.ok) {
+    throw new Error(`index request failed: status=${response.status}`);
+  }
+  return parseIndexFieldsResponse(payload);
+}
+
+function formatIndexFieldsOutput(config) {
+  return JSON.stringify(config);
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_QUERY_FETCH_TIMEOUT_MS, fetchImpl = fetch) {
@@ -1470,9 +2235,8 @@ function resultSummaryValue(log) {
 
 function isMybatisSqlLine(value) {
   const text = String(value || '');
+  if (/\b(?:ERROR|Exception|failed)\b/i.test(text)) return false;
   return /\bCreating a new SqlSession\b/.test(text)
-    || /\bSqlSession\b/.test(text)
-    || /\bJDBC Connection\b/.test(text)
     || /==>\s+Preparing:/.test(text)
     || /==>\s+Parameters:/.test(text)
     || /<==\s+Columns:/.test(text)
@@ -1521,21 +2285,44 @@ function compactDisplayText(value) {
     .trim();
 }
 
+function redactAlilogText(value) {
+  let text = redactText(value);
+  text = text.replace(
+    new RegExp(`(("${ALILOG_SECRET_KEY_TEXT}")\\s*:\\s*)("(?:[^"\\\\]|\\\\.)*"|[^,\\n\\r}\\]]+)`, 'gi'),
+    (_match, prefix) => `${prefix}"<redacted>"`,
+  );
+  text = text.replace(
+    new RegExp(`\\b(${ALILOG_SECRET_KEY_TEXT})\\b\\s*([:=])\\s*("[^"]*"|[^\\s,;]+)`, 'gi'),
+    (_match, key, separator) => `${key}${separator === ':' ? ': ' : '='}<redacted>`,
+  );
+  return text.replace(
+    /(^|[^\d*])((1[3-9]\d)[ -]\d{4}[ -](\d{4}))(?![\d*])/g,
+    (_match, prefix, _phone, head, tail) => `${prefix}${head}****${tail}`,
+  );
+}
+
 function formatErrorMessage(value) {
-  const text = compactDisplayText(value);
+  const text = redactAlilogText(compactDisplayText(value));
   if (text.length <= ERROR_MESSAGE_CHAR_LIMIT) return text;
   return `${text.slice(0, ERROR_MESSAGE_CHAR_LIMIT)}... [message truncated]`;
 }
 
-function renderContent(value, args, logIndex, offset, limit = DEFAULT_LOG_CHAR_LIMIT) {
+function prepareContentForOutput(value, args) {
   const rawText = args.expandSql ? String(value || '') : foldMybatisSqlText(value);
-  const text = compactDisplayText(rawText);
+  return redactAlilogText(compactDisplayText(rawText));
+}
+
+function renderPreparedContent(text, logIndex, offset, limit) {
   const fragment = text.slice(offset, offset + limit);
   const nextOffset = offset + limit;
   if (nextOffset >= text.length) {
     return fragment;
   }
   return `${fragment}\n[more: --continue ${logIndex}:${nextOffset}]`;
+}
+
+function renderContent(value, args, logIndex, offset, limit = DEFAULT_LOG_CHAR_LIMIT) {
+  return renderPreparedContent(prepareContentForOutput(value, args), logIndex, offset, limit);
 }
 
 function appendOutput(lines, value, state) {
@@ -1566,7 +2353,7 @@ function formatFieldsOutput(output) {
 }
 
 function formatSelectedFieldValue(value) {
-  const text = compactDisplayText(value);
+  const text = redactAlilogText(compactDisplayText(value));
   if (text.length <= SELECT_FIELD_CHAR_LIMIT) return text;
   return `${text.slice(0, SELECT_FIELD_CHAR_LIMIT)}\n[field truncated: narrow --select-fields, use default body with --continue]`;
 }
@@ -1586,9 +2373,10 @@ function formatContinuation(logs, args) {
   const body = displayBody(log);
   const rawText = body.value;
   if (!rawText) return `log ${parsed.index} has no message/content`;
-  if (parsed.offset >= rawText.length) return `log ${parsed.index} has no ${body.label} after offset ${parsed.offset}`;
+  const text = prepareContentForOutput(rawText, args);
+  if (parsed.offset >= text.length) return `log ${parsed.index} has no ${body.label} after offset ${parsed.offset}`;
 
-  return renderContent(rawText, args, parsed.index, parsed.offset, CONTINUE_LOG_CHAR_LIMIT);
+  return renderPreparedContent(text, parsed.index, parsed.offset, CONTINUE_LOG_CHAR_LIMIT);
 }
 
 function formatLogTime(log) {
@@ -1661,10 +2449,10 @@ function formatQueryOutput(output, args) {
     const raw = output && output.result ? output.result.raw : null;
     const code = raw && raw.code ? ` code=${raw.code}` : '';
     const message = raw && raw.message ? ` message=${formatErrorMessage(raw.message)}` : '';
-    return redactText(`query failed: status=${status}${code}${message}`);
+    return redactAlilogText(`query failed: status=${status}${code}${message}`);
   }
   if (!logs.length) return 'no logs';
-  if (args.continueAt) return redactText(formatContinuation(logs, args));
+  if (args.continueAt) return redactAlilogText(formatContinuation(logs, args));
 
   const lines = [];
   const state = { totalChars: 0, truncated: false };
@@ -1697,14 +2485,20 @@ function formatQueryOutput(output, args) {
   }
 
   appendPageHint(lines, logs, args, state);
-  return redactText(lines.join('\n').replace(/\n+$/, ''));
+  return redactAlilogText(lines.join('\n').replace(/\n+$/, ''));
 }
 
 function captureSlsAuth(page, context, args, dependencies = {}) {
   const writeAuth = dependencies.writeAuth || writeAuthFile;
   const abortSignal = dependencies.abortSignal;
+  const consoleQueryTimeoutMs = dependencies.consoleQueryTimeoutMs || SLS_AUTH_CONSOLE_QUERY_TIMEOUT_MS;
+  const browserMode = dependencies.browserMode || 'headed';
+  const timeoutMessage = dependencies.timeoutMessage
+    || 'failed to capture SLS auth response; click Search once in the Aliyun SLS page and retry';
   let settled = false;
   let timeoutId;
+  let consoleQueryTimeoutId;
+  let authWriteInFlight = false;
   const cleanupFns = [];
   let settleResolve;
   let settleReject;
@@ -1716,6 +2510,8 @@ function captureSlsAuth(page, context, args, dependencies = {}) {
   function cleanup() {
     if (timeoutId) clearTimeout(timeoutId);
     timeoutId = null;
+    if (consoleQueryTimeoutId) clearTimeout(consoleQueryTimeoutId);
+    consoleQueryTimeoutId = null;
     while (cleanupFns.length) {
       const cleanupFn = cleanupFns.pop();
       cleanupFn();
@@ -1737,29 +2533,62 @@ function captureSlsAuth(page, context, args, dependencies = {}) {
   }
 
   async function onResponse(response) {
-    if (settled) return;
-    const url = response.url();
-    // 用 SLS getLogs response 确认登录态有效，再从对应 request 取 x-csrf-token。
-    if ((!url.includes(SLS_GET_LOGS_INDEX_PATH) && !url.includes(SLS_GET_LOGS_FULL_PATH)) || !response.ok()) return;
-    const payload = await response.json().catch(() => null);
-    if (!payload || payload.success === false) return;
-    const csrfToken = response.request().headers()['x-csrf-token'];
-    if (!csrfToken) return;
-
-    debugAuth(args, `csrf captured (${url.includes(SLS_GET_LOGS_INDEX_PATH) ? 'logstoreindex' : 'logs'})`);
     try {
-      settleSuccess(await writeAuth(args, page, context, csrfToken));
+      if (settled) return;
+      let responsePath = '';
+      const responseUrl = response.url();
+      try {
+        const url = new URL(responseUrl);
+        if (url.origin !== SLS_BASE_URL) return;
+        responsePath = url.pathname;
+      } catch (error) {
+        return;
+      }
+      // 用 SLS getLogs response 确认登录态有效，再从对应 request 取 x-csrf-token。
+      if ((responsePath !== SLS_GET_LOGS_INDEX_PATH && responsePath !== SLS_GET_LOGS_FULL_PATH) || !response.ok()) return;
+      const payload = await response.json();
+      if (!payload || payload.success !== true) return;
+      const csrfToken = response.request().headers()['x-csrf-token'];
+      if (!csrfToken) return;
+      if (settled || authWriteInFlight) return;
+
+      authWriteInFlight = true;
+      if (consoleQueryTimeoutId) clearTimeout(consoleQueryTimeoutId);
+      consoleQueryTimeoutId = null;
+      debugAuth(args, `csrf captured (${responsePath === SLS_GET_LOGS_INDEX_PATH ? 'logstoreindex' : 'logs'})`);
+      const auth = await writeAuth(args, page, context, csrfToken);
+      debugAuth(args, 'auth file written');
+      settleSuccess(auth);
     } catch (error) {
       settleError(error);
     }
   }
 
+  function startConsoleQueryTimeout() {
+    if (browserMode !== 'headless'
+      || settled
+      || consoleQueryTimeoutId
+      || typeof page.url !== 'function'
+      || !isSlsConsoleUrl(page.url())) return;
+    consoleQueryTimeoutId = setTimeout(() => {
+      settleError(new Error('SLS console reached but no valid getLogs response was observed before the console query timeout'));
+    }, consoleQueryTimeoutMs);
+  }
+
+  function onFrameNavigated(frame) {
+    if (typeof page.mainFrame === 'function' && frame !== page.mainFrame()) return;
+    startConsoleQueryTimeout();
+  }
+
   // 总超时只做兜底：用户一直没有完成登录或页面没有发出 SLS 查询请求时，命令要能失败返回。
   timeoutId = setTimeout(() => {
-    settleError(new Error('failed to capture SLS auth response; click Search once in the Aliyun SLS page and retry'));
+    settleError(new Error(timeoutMessage));
   }, args.timeout * 1000);
   page.on('response', onResponse);
   cleanupFns.push(() => page.off('response', onResponse));
+  page.on('framenavigated', onFrameNavigated);
+  cleanupFns.push(() => page.off('framenavigated', onFrameNavigated));
+  startConsoleQueryTimeout();
   if (abortSignal) {
     const onAbort = () => {
       const reason = abortSignal.reason instanceof Error
@@ -1774,39 +2603,67 @@ function captureSlsAuth(page, context, args, dependencies = {}) {
       cleanupFns.push(() => abortSignal.removeEventListener('abort', onAbort));
     }
   }
-  debugAuth(args, 'waiting for SLS response; click Search if needed');
+  debugAuth(args, browserMode === 'headless' ? 'waiting for SLS response' : 'waiting for SLS response; click Search if needed');
   return settledPromise;
 }
 
 function installBrowserAuthCloseHandlers(context, settleError) {
   let pageCount = 0;
+  let disposed = false;
+  const cleanupFns = [];
+
+  function removeListener(target, event, listener) {
+    if (typeof target.off === 'function') {
+      target.off(event, listener);
+      return;
+    }
+    if (typeof target.removeListener === 'function') target.removeListener(event, listener);
+  }
+
+  function addOnceListener(target, event, listener) {
+    if (!target || typeof target.once !== 'function') return;
+    target.once(event, listener);
+    cleanupFns.push(() => removeListener(target, event, listener));
+  }
+
+  function addListener(target, event, listener) {
+    if (!target || typeof target.on !== 'function') return;
+    target.on(event, listener);
+    cleanupFns.push(() => removeListener(target, event, listener));
+  }
 
   function cancelAuth() {
     settleError(new Error('登录已取消或浏览器已关闭，auth 已停止。'));
   }
 
   function markPage(candidatePage) {
+    if (disposed) return;
     if (!candidatePage || typeof candidatePage.once !== 'function') return;
     if (typeof candidatePage.isClosed === 'function' && candidatePage.isClosed()) return;
     pageCount += 1;
-    candidatePage.once('close', () => {
+    addOnceListener(candidatePage, 'close', () => {
       pageCount = Math.max(0, pageCount - 1);
       if (pageCount === 0) cancelAuth();
     });
   }
 
-  if (context && typeof context.once === 'function') context.once('close', cancelAuth);
+  if (context && typeof context.once === 'function') addOnceListener(context, 'close', cancelAuth);
   if (context && typeof context.browser === 'function') {
     const browser = context.browser();
-    if (browser && typeof browser.once === 'function') browser.once('disconnected', cancelAuth);
+    if (browser && typeof browser.once === 'function') addOnceListener(browser, 'disconnected', cancelAuth);
   }
   if (context && typeof context.pages === 'function') {
     for (const candidatePage of context.pages()) markPage(candidatePage);
-    if (typeof context.on === 'function') context.on('page', markPage);
+    if (typeof context.on === 'function') addListener(context, 'page', markPage);
   }
   return {
     markPage,
     getPageCount: () => pageCount,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      while (cleanupFns.length) cleanupFns.pop()();
+    },
   };
 }
 
@@ -1815,7 +2672,315 @@ function formatAuthSuccessOutput() {
 }
 
 function reportAutoFillFailure(args, error) {
-  debugAuth(args, `auto-fill failed: ${error && error.message ? error.message : String(error)}`);
+  debugAuth(args, `auto-fill failed: ${externalErrorType(error)}`);
+}
+
+async function captureAuthWithBrowser(browser, args, autoFillPlan, authMode, dependencies = {}) {
+  const { context } = browser;
+  const captureAuth = dependencies.captureSlsAuth || captureSlsAuth;
+  const openPage = dependencies.openLoginPage || openLoginPage;
+  const runAutoFill = dependencies.runAliyunAutoFillMonitor || runAliyunAutoFillMonitor;
+  const authAbortController = new AbortController();
+  const browserLifecycle = installBrowserAuthCloseHandlers(context, (error) => {
+    if (!authAbortController.signal.aborted) authAbortController.abort(error);
+  });
+  try {
+    const page = context.pages()[0] || await context.newPage();
+    if (browserLifecycle.getPageCount() === 0) browserLifecycle.markPage(page);
+    const authCaptured = captureAuth(page, context, args, {
+      abortSignal: authAbortController.signal,
+      browserMode: authMode.browserMode,
+      timeoutMessage: authMode.browserMode === 'headless' ? 'SLS auth response was not observed' : undefined,
+    });
+    try {
+      await openPage(page, context, args);
+      if (authMode.automationMode === 'manual' && isAliyunHardCredentialFeedbackKind(authMode.feedbackKind)) {
+        const manualGuidance = authMode.feedbackKind === 'password_rejected'
+          ? loginPasswordRejectedManualGuidanceMessage()
+          : loginTotpRejectedManualGuidanceMessage();
+        await injectLoginGuidanceOnCurrentLoginPage(page, manualGuidance).catch(() => {});
+      } else if (authMode.automationMode === 'manual' && autoFillPlan && !canAutoFillAliyunLogin(autoFillPlan)) {
+        await injectLoginGuidanceOnCurrentLoginPage(page, loginAutoFillGuidanceMessage()).catch(() => {});
+      }
+      const automationTask = authMode.automationMode === 'auto-login'
+        ? runAliyunAutoLoginWithFeedbackRetry(page, args, autoFillPlan, dependencies)
+        : authMode.automationMode === 'auto-fill'
+          ? runAutoFill(page, args, {
+            autoFillPlan,
+            reportNotice: dependencies.reportAuthNotice,
+          })
+          : Promise.resolve();
+
+      if (authMode.automationMode === 'auto-login') {
+        automationTask.catch((error) => {
+          if (!authAbortController.signal.aborted) authAbortController.abort(error);
+        });
+      } else if (authMode.automationMode === 'auto-fill') {
+        automationTask.catch((error) => reportAutoFillFailure(args, error));
+      }
+      await authCaptured;
+    } catch (error) {
+      if (!authAbortController.signal.aborted) authAbortController.abort(error);
+      // 当前错误是认证失败原因；消费取消后的捕获结果，避免遗留未处理拒绝。
+      await authCaptured.catch(() => undefined);
+      throw error;
+    }
+  } finally {
+    browserLifecycle.dispose();
+  }
+}
+
+async function runAuthViaWorker(args, dependencies = {}) {
+  const forkProcess = dependencies.forkProcess || fork;
+  const worker = dependencies.spawnAuthWorker
+    ? dependencies.spawnAuthWorker()
+    : forkProcess(__filename, [], {
+      detached: true,
+      env: { ...process.env, [AUTH_WORKER_ENV]: '1' },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+  const writeOutput = dependencies.writeStdoutLine || writeStdoutLine;
+  const writeDebug = dependencies.writeDebugLine || ((line) => console.log(line));
+  const writeNotice = dependencies.writeStderrLine || writeStderrLine;
+  const workerArgs = {
+    command: args.command,
+    project: args.project,
+    logstore: args.logstore,
+    timeout: args.timeout,
+    authFile: args.authFile,
+    userFile: args.userFile,
+    profileDir: args.profileDir,
+    signinDomain: args.signinDomain,
+    username: args.username,
+    keychainService: args.keychainService,
+    totpKeychainService: args.totpKeychainService,
+    totpInputSelector: args.totpInputSelector,
+    noAutoFill: args.noAutoFill,
+    debug: args.debug,
+  };
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let noticeWritten = false;
+
+    function detach() {
+      if (worker.connected !== false && typeof worker.disconnect === 'function') worker.disconnect();
+      if (typeof worker.unref === 'function') worker.unref();
+    }
+
+    function settle(callback) {
+      if (settled) return;
+      settled = true;
+      callback();
+    }
+
+    worker.once('error', (error) => settle(() => {
+      detach();
+      reject(error);
+    }));
+    worker.once('exit', (code, signal) => settle(() => {
+      detach();
+      reject(new Error(`auth worker exited before reporting a result (code=${code}, signal=${signal || 'none'})`));
+    }));
+    worker.on('message', (message) => {
+      if (!message) return;
+      if (message.type === 'debug' && !settled) {
+        writeDebug(message.message);
+        return;
+      }
+      if (message.type === 'notice' && !settled && !noticeWritten) {
+        noticeWritten = true;
+        try {
+          Promise.resolve(writeNotice(AUTH_FOREIGN_ORIGIN_HANDOFF_NOTICE)).catch(() => {});
+        } catch (error) {
+        }
+        return;
+      }
+      if (message.type === 'ready') {
+        settle(() => {
+          Promise.resolve(writeOutput(formatAuthSuccessOutput()))
+            .then(() => {
+              detach();
+              resolve();
+            }, (error) => {
+              detach();
+              reject(error);
+            });
+        });
+        return;
+      }
+      if (message.type === 'error') {
+        settle(() => {
+          detach();
+          reject(new Error(message.message || 'auth worker failed'));
+        });
+      }
+    });
+    function rejectStart(error) {
+      settle(() => {
+        detach();
+        reject(error);
+      });
+    }
+    try {
+      worker.send({ type: 'start', args: workerArgs }, (error) => {
+        if (error) rejectStart(error);
+      });
+    } catch (error) {
+      rejectStart(error);
+    }
+  });
+}
+
+async function runAuthInWorker(args, dependencies = {}) {
+  const prepareAutoFill = dependencies.prepareAutoFillPlan || prepareAutoFillPlan;
+  const createBrowserContext = dependencies.newBrowserContext || newBrowserContext;
+  const captureAuth = dependencies.captureAuthWithBrowser || captureAuthWithBrowser;
+  const writeOutput = dependencies.writeStdoutLine || writeStdoutLine;
+  const reportReady = dependencies.reportAuthReady || (() => writeOutput(formatAuthSuccessOutput()));
+  const reportNotice = dependencies.reportAuthNotice || (() => Promise.resolve());
+  const reportCleanupEvent = dependencies.reportCleanupEvent
+    || ((event) => debugAuth(args, event));
+  const disposeBrowser = dependencies.disposeBrowserSession
+    || ((candidate) => disposeBrowserSession(candidate, { ...dependencies, reportCleanupEvent }));
+  const cleanupTimeoutMs = dependencies.cleanupTimeoutMs === undefined
+    ? 5000
+    : dependencies.cleanupTimeoutMs;
+  const cleanupTasks = [];
+  function startBrowserCleanup(candidate) {
+    if (!candidate) return;
+    cleanupTasks.push(Promise.resolve().then(() => disposeBrowser(candidate)).catch(() => {}));
+  }
+  const override = {};
+  const hasAutomationMode = Object.prototype.hasOwnProperty.call(dependencies, 'automationMode');
+  const hasBrowserMode = Object.prototype.hasOwnProperty.call(dependencies, 'browserMode');
+  if (hasAutomationMode) override.automationMode = dependencies.automationMode;
+  if (hasBrowserMode) override.browserMode = dependencies.browserMode;
+
+  debugAuth(args, 'started', true);
+
+  let autoFillPlan = null;
+  let authMode;
+  const hasExplicitMode = hasAutomationMode && hasBrowserMode;
+  if (hasAutomationMode !== hasBrowserMode) {
+    selectAliyunAuthMode(args, null, override);
+  } else if (hasExplicitMode) {
+    authMode = selectAliyunAuthMode(args, null, override);
+    if (authMode.automationMode !== 'manual') autoFillPlan = await prepareAutoFill(args);
+  } else if (args.noAutoFill) {
+    authMode = selectAliyunAuthMode(args, null, override);
+  } else {
+    autoFillPlan = await prepareAutoFill(args);
+    authMode = selectAliyunAuthMode(args, autoFillPlan, override);
+  }
+  let browser = null;
+  try {
+    if (authMode.browserMode === 'headless') {
+      try {
+        browser = await createBrowserContext(args, true);
+        debugAuth(args, 'mode=headless');
+        await captureAuth(browser, args, autoFillPlan, authMode, {
+          reportAuthNotice: reportNotice,
+        });
+      } catch (error) {
+        if (hasExplicitMode) {
+          throw error;
+        }
+        debugAuth(args, `headless fallback: ${authDebugFailureSummary(error)}`);
+        if (browser) {
+          const headlessBrowser = browser;
+          browser = null;
+          startBrowserCleanup(headlessBrowser);
+        }
+        const feedbackKind = aliyunAutoLoginFeedbackKind(error);
+        authMode = isAliyunHardCredentialFeedbackKind(feedbackKind)
+          ? { automationMode: 'manual', browserMode: 'headed', feedbackKind }
+          : { automationMode: 'auto-fill', browserMode: 'headed' };
+      }
+    }
+
+    if (!browser) {
+      browser = await createBrowserContext(args, false);
+      debugAuth(args, 'mode=headed');
+      await captureAuth(browser, args, autoFillPlan, authMode, {
+        reportAuthNotice: reportNotice,
+      });
+    }
+
+    await reportReady();
+  } catch (error) {
+    if (!dependencies.reportAuthError) throw error;
+    await dependencies.reportAuthError(error);
+  } finally {
+    startBrowserCleanup(browser);
+    await waitForBrowserCleanup(cleanupTasks, cleanupTimeoutMs);
+    debugAuth(args, 'browser context cleanup finished');
+  }
+}
+
+async function runAuth(args, dependencies = {}) {
+  const inProcessDependencyNames = [
+    'prepareAutoFillPlan',
+    'newBrowserContext',
+    'captureAuthWithBrowser',
+    'disposeBrowserSession',
+    'automationMode',
+    'browserMode',
+  ];
+  if (inProcessDependencyNames.some((name) => Object.prototype.hasOwnProperty.call(dependencies, name))) {
+    return runAuthInWorker(args, dependencies);
+  }
+  return runAuthViaWorker(args, dependencies);
+}
+
+async function runAuthWorkerProcess(channel = process, dependencies = {}) {
+  const executeAuth = dependencies.executeAuth || runAuthInWorker;
+  const exitWorker = dependencies.exit || ((code) => channel.exit(code));
+  const startMessage = await new Promise((resolve, reject) => {
+    channel.once('message', resolve);
+    channel.once('disconnect', () => reject(new Error('auth parent disconnected before worker start')));
+  });
+  if (!startMessage || startMessage.type !== 'start' || !startMessage.args) {
+    exitWorker(1);
+    return;
+  }
+
+  let terminalSent = false;
+  let noticeSent = false;
+  async function reportTerminal(message) {
+    if (terminalSent) return;
+    terminalSent = true;
+    await new Promise((resolve, reject) => {
+      channel.send(message, (error) => error ? reject(error) : resolve());
+    });
+    if (channel.connected && typeof channel.disconnect === 'function') channel.disconnect();
+  }
+  const workerDependencies = {
+    reportAuthNotice: () => {
+      if (terminalSent || noticeSent) return;
+      noticeSent = true;
+      try {
+        channel.send({
+          type: 'notice',
+          message: AUTH_FOREIGN_ORIGIN_HANDOFF_NOTICE,
+        }, () => {});
+      } catch (error) {
+      }
+    },
+    reportAuthReady: () => reportTerminal({ type: 'ready' }),
+    reportAuthError: (error) => reportTerminal({
+      type: 'error',
+      message: redactAlilogText(error && error.message ? error.message : String(error)),
+    }),
+  };
+
+  try {
+    await executeAuth(startMessage.args, workerDependencies);
+  } catch (error) {
+    await workerDependencies.reportAuthError(error).catch(() => {});
+  } finally {
+    exitWorker(0);
+  }
 }
 
 async function run(args) {
@@ -1840,31 +3005,13 @@ async function run(args) {
     console.log(formatLogstoresOutput(output, args));
     return;
   }
-
-  const browser = await newBrowserContext(args);
-  const { context } = browser;
-  try {
-    const authAbortController = new AbortController();
-    const browserLifecycle = installBrowserAuthCloseHandlers(context, (error) => {
-      if (!authAbortController.signal.aborted) authAbortController.abort(error);
-    });
-    const page = context.pages()[0] || await context.newPage();
-    if (browserLifecycle.getPageCount() === 0) browserLifecycle.markPage(page);
-    const authCaptured = captureSlsAuth(page, context, args, {
-      abortSignal: authAbortController.signal,
-    });
-    await openLoginPage(page, context, args);
-    const autoFillTask = args.noAutoFill ? Promise.resolve() : autoLoginAliyun(page, args);
-    autoFillTask.catch((error) => reportAutoFillFailure(args, error));
-    await authCaptured;
-    await writeStdoutLine(formatAuthSuccessOutput());
-    if (!args.profileDir) {
-      closeAndCleanupBrowserDetached(browser);
-      process.exit(0);
-    }
-  } finally {
-    await closeAndCleanupBrowser(browser).catch(() => {});
+  if (args.command === 'index-fields') {
+    const output = await getIndexFieldsWithAuthFile(args);
+    console.log(formatIndexFieldsOutput(output));
+    return;
   }
+
+  return runAuth(args);
 }
 
 module.exports = {
@@ -1873,6 +3020,12 @@ module.exports = {
   parseTimeExpression,
   buildQueryBody,
   buildLogstoresRequest,
+  buildIndexFieldsRequest,
+  parseIndexFieldsResponse,
+  getIndexFieldsWithAuthFile,
+  queryLogsWithAuthFile,
+  listLogstoresWithAuthFile,
+  formatIndexFieldsOutput,
   normalizeResult,
   extractPayloadLogs,
   extractLogs,
@@ -1884,13 +3037,24 @@ module.exports = {
   foldMybatisSqlText,
   renderContent,
   openLoginPage,
-  autoLoginAliyun,
+  runAliyunLoginAutomation,
+  runAliyunAutoFillMonitor,
   hasAliyunCaptcha,
+  getAliyunFeedback,
   detectAliyunCaptchaInDocument,
+  detectAliyunFeedbackInDocument,
+  autoLoginActionForState,
+  autoLoginPacingRange,
+  chooseAliyunAutoLoginDelay,
   loginAutoFillGuidanceMessage,
   shouldInjectLoginGuidanceNotice,
   fetchWithTimeout,
+  findPlaywrightModulePath,
+  writeAuthFile,
+  newBrowserContext,
+  disposeBrowserSession,
   captureSlsAuth,
+  captureAuthWithBrowser,
   installBrowserAuthCloseHandlers,
   formatAuthSuccessOutput,
   reportAutoFillFailure,
@@ -1898,10 +3062,19 @@ module.exports = {
   readUsernameFromKeychainAccount,
   readPasswordFromKeychain,
   readTotpSeedFromKeychain,
+  parseSupportedTotpSeed,
+  canUseHeadlessAliyunLogin,
+  selectAliyunAuthMode,
+  runAuth,
+  runAuthWorkerProcess,
 };
 
 if (require.main === module) {
   (async () => {
+    if (process.env[AUTH_WORKER_ENV] === '1' && typeof process.send === 'function') {
+      await runAuthWorkerProcess(process);
+      return;
+    }
     const args = parseArgs(process.argv.slice(2));
     await applyUserConfig(args);
     await run(args);

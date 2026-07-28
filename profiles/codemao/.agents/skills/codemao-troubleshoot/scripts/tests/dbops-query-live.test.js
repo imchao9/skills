@@ -42,6 +42,18 @@ function runDbopsProcess(args) {
   });
 }
 
+function applicationCreateTime(value) {
+  const normalized = String(value || '').trim().replace(' ', 'T');
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function applylistRows(payload) {
+  if (Array.isArray(payload && payload.rows)) return payload.rows;
+  if (Array.isArray(payload && payload.data)) return payload.data;
+  return [];
+}
+
 function requireCookie() {
   if (!hasCookie()) {
     assert.fail('dbops cookie missing; run scripts/dbops-query auth, then rerun npm run test:live');
@@ -90,7 +102,7 @@ function authDbops() {
 function isLowCostReadonlySql(sql) {
   const normalized = String(sql || '').trim().replace(/\s+/g, ' ').toLowerCase();
   if (/^select\s+(1|version\s*\()/i.test(normalized)) return true;
-  if (/^(show|desc|describe|explain)\b/i.test(normalized)) return true;
+  if (/^(show|explain)\b/i.test(normalized)) return true;
   if (/^select\b/i.test(normalized) && /\blimit\s+\d+\b/i.test(normalized)) return true;
   return false;
 }
@@ -135,11 +147,40 @@ test('live dbops-query read-only platform checks', () => {
   assert.equal(typeof instances.count, 'number');
   assert.equal(Array.isArray(instances.items), true);
 
+  const mysqlInstances = runDbops(['instances', 'can_read', 'db_type', 'mysql']);
+  assert.equal(mysqlInstances.items.every((item) => item.db_type === 'mysql'), true);
+
+  const knownAccess = runDbops(['instances', 'known_access', 'db_type', 'mysql']);
+  assert.equal(Array.isArray(knownAccess.items), true);
+  assert.equal(knownAccess.items.every((item) => item.db_type === 'mysql'), true);
+  assert.equal(knownAccess.items.every((item) => Array.isArray(item.known_access_databases)), true);
+
   const querylog = runDbops(['querylog', 'limit=1', 'offset=0']);
   assert.equal(querylog.http_status, undefined);
   assert.equal(querylog.payload, undefined);
   assert.equal(typeof querylog.total, 'number');
   assert.equal(Array.isArray(querylog.items), true);
+});
+
+test('live dbops-query applylist is ordered by application time descending', () => {
+  requireCookie();
+
+  const response = runDbops(['api', 'POST', '/query/applylist/', 'limit=50', 'offset=0', 'search=']);
+  assert.equal(response.http_status, 200);
+  const applications = applylistRows(response.payload)
+    .map((application) => ({ application, createdAt: applicationCreateTime(application.create_time) }))
+    .filter(({ createdAt }) => createdAt !== null);
+
+  assert.ok(
+    applications.length >= 2,
+    'cannot verify applylist ordering: fewer than 2 dated applications',
+  );
+  for (let index = 1; index < applications.length; index += 1) {
+    assert.ok(
+      applications[index - 1].createdAt >= applications[index].createdAt,
+      `applylist is not ordered by application time descending at rows ${index} and ${index + 1}`,
+    );
+  }
 });
 
 test('live dbops-query resources and raw api stay read-only', () => {

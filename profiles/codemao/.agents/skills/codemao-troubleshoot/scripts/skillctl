@@ -185,11 +185,26 @@ function chromePath() {
   return candidates.find((candidate) => fs.existsSync(candidate)) || '';
 }
 
-function setupCheck() {
+function inspectSetupEnvironment() {
+  const packages = {};
+  for (const packageName of ['mysql2', 'redis', 'mongodb', 'playwright']) {
+    packages[packageName] = resolvePackage(packageName);
+  }
+  return {
+    nodeVersion: process.version,
+    npm: commandExists('npm'),
+    lockfileExists: fs.existsSync(path.join(SKILL_ROOT, 'package-lock.json')),
+    packages,
+    chromePath: chromePath(),
+  };
+}
+
+function setupCheck(inspect = inspectSetupEnvironment) {
   const lines = [];
   let ok = true;
+  const state = inspect();
 
-  const nodeVersion = process.version;
+  const nodeVersion = state.nodeVersion;
   if (parseNodeMajor(nodeVersion) >= 20) {
     lines.push(`[ok] node ${nodeVersion}`);
   } else {
@@ -197,7 +212,7 @@ function setupCheck() {
     lines.push(`[missing] node >= 20 (found ${nodeVersion || 'none'})`);
   }
 
-  const npm = commandExists('npm');
+  const npm = state.npm;
   if (npm.ok) {
     lines.push(`[ok] npm ${npm.stdout.trim()}`);
   } else {
@@ -205,8 +220,7 @@ function setupCheck() {
     lines.push('[missing] npm');
   }
 
-  const lockfile = path.join(SKILL_ROOT, 'package-lock.json');
-  if (fs.existsSync(lockfile)) {
+  if (state.lockfileExists) {
     lines.push('[ok] package-lock.json');
   } else {
     ok = false;
@@ -214,7 +228,7 @@ function setupCheck() {
   }
 
   for (const packageName of ['mysql2', 'redis', 'mongodb', 'playwright']) {
-    if (resolvePackage(packageName)) {
+    if (state.packages[packageName]) {
       lines.push(`[ok] ${packageName}`);
     } else {
       ok = false;
@@ -222,7 +236,7 @@ function setupCheck() {
     }
   }
 
-  const chrome = chromePath();
+  const chrome = state.chromePath;
   if (chrome) {
     lines.push(`[ok] chrome ${chrome}`);
   } else {

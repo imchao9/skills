@@ -34,14 +34,14 @@
       "sourceUrl": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
       "sourceType": "git",
       "skillPath": "codemao-troubleshoot/SKILL.md",
-      "computedHash": "fc85534cc41a9d74c17230ae11b9be800745881a059e64858f28b507e3d6dc58"
+      "computedHash": "6060c0b197eaed472e2d1038725496160d9090ca1acbc9ea95c72ba0b38ea2be"
     },
     "crp-deploy": {
       "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
       "sourceUrl": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
       "sourceType": "git",
       "skillPath": "crp-deploy/SKILL.md",
-      "computedHash": "f33c5cc43569978f63fb62b20bee43c0cc3c30ce8faee8ecace667aeacaef8a5"
+      "computedHash": "1121d5f96f22cd1d5e9530f27b0b0d0c55ee8227136c76d9f9aebaeddcfd8ebd"
     },
     "dingtalk-mcp-reader": {
       "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
@@ -91,6 +91,13 @@
       "sourceType": "git",
       "skillPath": "market-live-report-skill/SKILL.md",
       "computedHash": "fbef97e04931e842e746a237843bfbdacf5e69f9775a55df1fa89e77b37b4c3a"
+    },
+    "platform-on-duty": {
+      "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
+      "sourceUrl": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
+      "sourceType": "git",
+      "skillPath": "platform-on-duty/SKILL.md",
+      "computedHash": "563c5bd3f99484269d8ff2b63e7829269a0a9233b62503b31066cd859643fe5b"
     }
   }
 }

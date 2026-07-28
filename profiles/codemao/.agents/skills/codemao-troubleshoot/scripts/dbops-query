@@ -17,6 +17,7 @@ const DBOPS_BASE_URL = 'https://dbops.codemao.cn';
 const DBOPS_SQLQUERY_REFERER = 'https://dbops.codemao.cn/sqlquery/';
 const DBOPS_LOGIN_PAGE_URL = DBOPS_SQLQUERY_REFERER;
 const DBOPS_AUTH_CHECK_URL = 'https://dbops.codemao.cn/group/user_all_instances/?tag_codes%5B%5D=can_read';
+const DINGTALK_LOGIN_ORIGIN = 'https://login.dingtalk.com';
 const DEFAULT_LOGIN_TIMEOUT_SECONDS = 180;
 const PLAYWRIGHT_OPEN_TIMEOUT_MS = 30000;
 const LOGIN_HOST_KEYWORD = 'internal-account.codemao.cn';
@@ -33,21 +34,18 @@ const PERMISSION_KEYWORDS = [
   '无权限',
   '权限不足',
 ];
-const SQL_ALLOWED_PREFIXES = ['select ', 'show ', 'desc ', 'describe ', 'explain '];
-const SQL_BLOCKED_PREFIXES = [
-  'insert ',
-  'update ',
-  'delete ',
-  'drop ',
-  'alter ',
-  'create ',
-  'truncate ',
-  'replace ',
-  'merge ',
-  'call ',
-  'grant ',
-  'revoke ',
-];
+const SQL_ALLOWED_PREFIXES = ['select ', 'show ', 'explain '];
+const APPLYLIST_PAGE_SIZE = 50;
+const APPLYLIST_MAX_ITEMS = 500;
+
+async function grantDingTalkLocalNetworkAccess(context) {
+  try {
+    await context.grantPermissions(['local-network-access'], { origin: DINGTALK_LOGIN_ORIGIN });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
 
 const KNOWN_COMMANDS = new Set([
   'auth',
@@ -69,12 +67,12 @@ const KNOWN_COMMANDS = new Set([
 
 const USAGE = `Usage:
   dbops-query <command> [args]
-  dbops-query "SELECT ..."        # uses configured default target
-  echo "SELECT ..." | dbops-query # uses configured default target
+  dbops-query "<query>"           # uses configured default target and instance type
+  echo "<query>" | dbops-query    # uses configured default target and instance type
 
 Commands:
   auth             capture dbops login cookie
-  query-on         run readonly SQL on explicit instance/database
+  query-on         run a query on an explicit instance/database
   instances        list readable instances
   resources        list databases, tables, or schemas
   querylog         list recent query logs
@@ -107,18 +105,29 @@ Options:
   'query-on': `Usage:
   dbops-query query-on "实例名" "库名" "SELECT COUNT(*) FROM tbl_xxx"
 
-Run readonly SQL on an explicit instance and database.
-Only SELECT, SHOW, DESC, DESCRIBE, and EXPLAIN are allowed.
+Run a query on an explicit instance and database.
+Relational instances allow only SELECT, SHOW, and EXPLAIN.
+Redis and Mongo command text is passed to dbops for server-side validation.
+For a MySQL table definition, use SHOW CREATE TABLE \`table_name\`.
 `,
   instances: `Usage:
-  dbops-query instances [tag_code]
+  dbops-query instances [tag_code] [db_type TYPE]
 
 List instances visible to the current dbops account.
 Default tag_code is can_read.
+known_access lists the known subset confirmed by active approved applications
+and adds known_access_databases. Other accessible instances or databases may be absent.
+
+db_type TYPE
+  Filter instances by database type.
+  Currently observed values: mongo, mysql, pgsql, redis.
+  Other non-empty values are accepted.
 
 Examples:
   dbops-query instances
   dbops-query instances can_read
+  dbops-query instances can_read db_type mysql
+  dbops-query instances known_access db_type mysql
 `,
   resources: `Usage:
   dbops-query resources "实例名" database
@@ -176,8 +185,8 @@ Confirm the target instance and database before using it as evidence.
   'favorite-query': `Usage:
   dbops-query favorite-query <alias> "SELECT COUNT(*) FROM tbl_xxx"
 
-Run modified readonly SQL using the target from one favorite.
-Only readonly SQL is allowed.
+Run a modified query using the target from one favorite.
+Relational instances allow only SELECT, SHOW, and EXPLAIN.
 `,
   favorite: `Usage:
   dbops-query favorite <query_log_id> <alias>
@@ -239,28 +248,6 @@ function checkReadonlySql(sql) {
   }
 }
 
-function isReadonlySqlStart(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return SQL_ALLOWED_PREFIXES.some((prefix) => normalized === prefix.trim() || normalized.startsWith(prefix));
-}
-
-function isBlockedSqlStart(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return SQL_BLOCKED_PREFIXES.some((prefix) => normalized === prefix.trim() || normalized.startsWith(prefix));
-}
-
-function sqlFromArgs(argv) {
-  if (!argv.length) return '';
-  const command = argv[0];
-  if (command === 'query-on') return argv.slice(3).join(' ');
-  if (command === 'favorite-query') return argv.slice(2).join(' ');
-  if (command === 'favorite-run') return '';
-  if (command === 'auth') return '';
-  if (command.startsWith('-')) return '';
-  if (KNOWN_COMMANDS.has(command)) return '';
-  return argv.join(' ');
-}
-
 function assertNoOptionArguments(items) {
   for (const item of items) {
     if (String(item || '').startsWith('-')) {
@@ -280,6 +267,34 @@ function assertArgCount(command, argv, min, max = min) {
   }
 }
 
+function parseInstancesArgs(argv) {
+  let index = 1;
+  let tagCode = 'can_read';
+  if (argv[index] && argv[index] !== 'db_type') {
+    tagCode = argv[index];
+    index += 1;
+  }
+
+  let dbType;
+  if (argv[index] === 'db_type') {
+    if (index + 1 >= argv.length) {
+      throw new CliError('invalid_argument', 'db_type requires a non-empty TYPE', { exitCode: 2 });
+    }
+    dbType = argv[index + 1];
+    if (!String(dbType).trim()) {
+      throw new CliError('invalid_argument', 'db_type requires a non-empty TYPE', { exitCode: 2 });
+    }
+    index += 2;
+  }
+  if (argv[index] === 'db_type' && dbType !== undefined) {
+    throw new CliError('invalid_argument', 'duplicate db_type condition', { exitCode: 2 });
+  }
+  if (index < argv.length) {
+    throw new CliError('invalid_argument', `unknown argument: ${argv[index]}`, { exitCode: 2 });
+  }
+  return { tagCode, dbType };
+}
+
 function validateKnownCommandArgs(argv) {
   const command = argv[0];
   if (command === 'auth') return;
@@ -292,8 +307,8 @@ function validateKnownCommandArgs(argv) {
     return;
   }
   if (command === 'instances') {
-    assertArgCount(command, argv, 1, 2);
     assertNoOptionArguments(argv.slice(1));
+    parseInstancesArgs(argv);
     return;
   }
   if (command === 'resources') {
@@ -333,13 +348,8 @@ function validateArgs(argv) {
   }
   if (KNOWN_COMMANDS.has(argv[0])) {
     validateKnownCommandArgs(argv);
-    checkReadonlySql(sqlFromArgs(argv));
     return { usage: false };
   }
-  if (!isReadonlySqlStart(argv[0]) && !isBlockedSqlStart(argv[0])) {
-    throw new CliError('invalid_argument', `unknown command: ${argv[0]}`, { exitCode: 2 });
-  }
-  checkReadonlySql(sqlFromArgs(argv));
   return { usage: false };
 }
 
@@ -502,6 +512,16 @@ function buildQueryRequest(config, sql) {
     sql_content: sql,
     limit_num: String(config.limit_num),
   });
+}
+
+function buildApplylistRequest(config, offset) {
+  const request = buildApiRequest(config, 'POST', '/query/applylist/', {
+    limit: String(APPLYLIST_PAGE_SIZE),
+    offset: String(offset),
+    search: '',
+  });
+  request.headers.Referer = `${config.base_url}/queryapplylist/`;
+  return request;
 }
 
 function looksLikeLoginResponse(url, bodyText) {
@@ -677,6 +697,48 @@ async function fetchInstancesPayload(config) {
   const result = await performJsonRequest(() => buildApiRequest(config, 'GET', '/group/user_all_instances/', { 'tag_codes[]': 'can_read' }));
   ensureServicePayloadOk(result.payload, 'instances');
   return result;
+}
+
+function currentDateInShanghai() {
+  const parts = new Intl.DateTimeFormat('en', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+async function fetchKnownAccessDatabases(config) {
+  const databasesByInstance = new Map();
+  const today = currentDateInShanghai();
+  for (let offset = 0; offset < APPLYLIST_MAX_ITEMS; offset += APPLYLIST_PAGE_SIZE) {
+    const result = await performJsonRequest(() => buildApplylistRequest(config, offset));
+    ensureServicePayloadOk(result.payload, 'known_access applications');
+    const applications = payloadItems(result.payload).slice(0, APPLYLIST_MAX_ITEMS - offset);
+    let reachedExpiredApproval = false;
+    for (const application of applications) {
+      if (Number(application.status) !== 1) continue;
+      if (String(application.valid_date || '') < today) {
+        reachedExpiredApproval = true;
+        break;
+      }
+      const instanceName = String(application.instance__instance_name || '').trim();
+      if (!instanceName) continue;
+      if (!databasesByInstance.has(instanceName)) databasesByInstance.set(instanceName, new Set());
+      const databases = databasesByInstance.get(instanceName);
+      for (const database of String(application.db_list || '').split(',')) {
+        const databaseName = database.trim();
+        if (databaseName) databases.add(databaseName);
+      }
+    }
+    if (reachedExpiredApproval) break;
+    if (applications.length < APPLYLIST_PAGE_SIZE) break;
+    const total = Number(result.payload && result.payload.total);
+    if (Number.isFinite(total) && offset + applications.length >= total) break;
+  }
+  return databasesByInstance;
 }
 
 async function fetchResourcesPayload(config, instanceName, resourceType, extraParams = {}) {
@@ -962,7 +1024,6 @@ async function runQuery(argv) {
     printUsage();
     return 1;
   }
-  checkReadonlySql(sql);
   const config = getRuntimeConfig({ requireQueryTarget: true });
   const payload = await runQueryWithTarget(config, config.instance_name, config.db_name, sql, {
     schemaName: config.schema_name,
@@ -982,10 +1043,26 @@ async function runQueryOn(argv) {
 
 async function runInstances(argv) {
   const config = getRuntimeConfig();
-  const tagCode = argv.length >= 2 ? argv[1] : 'can_read';
-  const result = await performJsonRequest(() => buildApiRequest(config, 'GET', '/group/user_all_instances/', { 'tag_codes[]': tagCode }));
+  const { tagCode, dbType } = parseInstancesArgs(argv);
+  const knownAccessDatabases = tagCode === 'known_access'
+    ? await fetchKnownAccessDatabases(config)
+    : null;
+  if (knownAccessDatabases && knownAccessDatabases.size === 0) {
+    printJson({ count: 0, items: [] });
+    return;
+  }
+  const requestedTagCode = tagCode === 'known_access' ? 'can_read' : tagCode;
+  const result = await performJsonRequest(() => buildApiRequest(config, 'GET', '/group/user_all_instances/', { 'tag_codes[]': requestedTagCode }));
   ensureServicePayloadOk(result.payload, 'instances');
-  printJson(compactPayloadList(result.payload, compactInstanceItem));
+  const items = payloadItems(result.payload)
+    .filter((item) => dbType === undefined || item.db_type === dbType)
+    .filter((item) => !knownAccessDatabases || knownAccessDatabases.has(item.instance_name))
+    .map((item) => {
+      const output = compactInstanceItem(item);
+      if (knownAccessDatabases) output.known_access_databases = [...knownAccessDatabases.get(item.instance_name)];
+      return output;
+    });
+  printJson({ count: items.length, items });
 }
 
 async function runResources(argv) {
@@ -1318,6 +1395,7 @@ async function runAuth(argv) {
     headless: false,
     chromiumSandbox: true,
   });
+  await grantDingTalkLocalNetworkAccess(context);
   let settled = false;
   let timeoutId;
   let authWriteInFlight = false;
@@ -1460,5 +1538,6 @@ module.exports = {
   readCookieFromFile,
   missingRequiredCookies,
   installBrowserAuthCloseHandlers,
+  grantDingTalkLocalNetworkAccess,
   writeAuthFiles,
 };
