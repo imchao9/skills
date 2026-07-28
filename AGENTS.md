@@ -13,7 +13,11 @@ env -u http_proxy -u https_proxy -u all_proxy \
 ```
 
 Git source 只包含已经提交并推送到 GitHub 的内容。
-本地路径安装和软链只用于本机开发、调试或临时验证。
+本地路径安装只用于未推送内容验证。
+软链只用于同机共研且需要实时跟随 canonical profile 的项目；优先只链接
+`.agents/skills`，替换前检查差异和 Git 状态并保留原目录备份。
+长期业务、CI、远程部署和跨机器项目继续使用 Git source `--copy`，绝对软链不提交。
+profile 之间不以软链代替来源审查和晋级同步。
 根目录 `.agents` 只是默认 profile 的 alias：`.agents -> profiles/core/.agents`。
 
 # Profile 语义

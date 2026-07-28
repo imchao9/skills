@@ -128,21 +128,38 @@ Lock 是 profile 级 `skills-lock.json`，不是每个 skill 一个 `skill.lock`
 
 ### 方式二：软链复用
 
-软链只用于本机开发、调试或明确要跟随本仓库工作区实时变化的项目。
+软链只用于本机开发、调试或明确要跟随本仓库工作区实时变化的共研项目。
+长期业务项目、跨机器协作、CI 和远程部署继续使用方式一。
 
-在目标项目根目录执行，使用默认 profile：
-
-```bash
-ln -s /Users/cm/Documents/Me/skills/.agents .agents
-```
-
-或者明确选择某个 profile：
+优先只链接 `skills` 子目录，避免覆盖项目自己的其它 `.agents` 配置：
 
 ```bash
-ln -s /Users/cm/Documents/Me/skills/profiles/core/.agents .agents
+mkdir -p .agents
+ln -s /Users/cm/Documents/Me/skills/profiles/core/.agents/skills \
+  .agents/skills
 ```
 
-如果目标项目已经有 `.agents`，先手动确认里面有没有项目私有内容，再决定是否替换。
+明确选择专业 profile：
+
+```bash
+mkdir -p .agents
+ln -s /Users/cm/Documents/Me/skills/profiles/basketball/.agents/skills \
+  .agents/skills
+```
+
+使用软链前必须确认：
+
+- canonical profile 路径在本机稳定；
+- 项目确实要实时跟随未提交变化；
+- `.agents/skills` 没有需要独立版本化的项目私有 skill；
+- 项目不依赖该绝对路径运行 CI、远程部署或跨机器协作。
+
+如果目标项目已经有 `.agents/skills`，先检查差异和 Git 状态，把原目录改名备份后再创建软链。
+绝对软链不要提交到需要在其它机器运行的仓库。
+通过软链编辑文件就是直接修改 canonical profile。
+
+不要在 profile 之间用软链代替审核晋级。`global-runtime` 继续按
+`profiles/global-runtime/UPSTREAM.md` 逐项同步来源 profile。
 
 ### 方式三：本地路径安装
 
@@ -194,9 +211,9 @@ env -u http_proxy -u https_proxy -u all_proxy \
 
 判断项目当前是不是引用：
 
-- 如果目标项目 `.agents` 是 symlink，它是引用，会跟随源 profile 实时变化。
+- 如果目标项目 `.agents/skills`（或整个 `.agents`）是 symlink，它是引用，会跟随源 profile 实时变化。
 - 如果目标项目 `.agents/skills/<skill-name>/SKILL.md` 是普通文件，它是复制安装，需要重新运行 `npx skills add` 才会升级。
-- 长期项目默认使用复制安装，只有本机调试项目才建议使用 symlink。
+- 长期项目默认使用复制安装，只有本机共研、调试或临时验证项目才建议使用 symlink。
 
 ## 添加新的 Skill
 

@@ -99,7 +99,38 @@ Lock 是 profile 级文件，文件名是 `skills-lock.json`。
 
 ## 项目使用规则
 
-业务项目默认从 GitHub source 安装某个 profile。
+项目采用“本机共研软链、长期交付复制”的双模式。
+
+### 模式一：本机共研软链
+
+只有同时满足以下条件时才使用软链：
+
+- 项目和本仓库位于同一台机器，并且 canonical profile 路径稳定。
+- 项目明确需要实时跟随 profile 工作区的未提交变化。
+- `.agents/skills` 中没有需要独立版本化的项目私有 skill。
+- 项目不依赖该绝对路径运行 CI、远程部署或跨机器协作。
+- 修改软链内文件等同于修改 canonical profile，使用者理解这个副作用。
+
+优先只链接 `.agents/skills`，保留项目自己的其它 `.agents` 配置：
+
+```bash
+mkdir -p .agents
+ln -s /Users/cm/Documents/Me/skills/profiles/<profile>/.agents/skills \
+  .agents/skills
+```
+
+替换已有目录前必须检查差异和 Git 状态，并把原目录改名备份；不要直接删除未确认内容。
+绝对软链属于本机运行配置，不提交到需要在其它机器、CI 或服务器运行的仓库。
+
+以下位置适合保持软链：
+
+- `~/.agents/skills` 到 `profiles/global-runtime/.agents/skills`。
+- 本仓库根目录 `.agents` 到默认 `profiles/core/.agents`。
+- 像 `Basketball_videos` 这样与某个专业 profile 同机共研、需要实时回灌的本地项目。
+
+### 模式二：Git Source 复制安装
+
+长期业务项目、多人协作项目、需要 CI/远程部署的项目，以及需要锁定已审核版本的项目，默认从 GitHub source 安装某个 profile。
 Git source 安装使用 `--copy`，因此目标项目拿到的是复制后的 `.agents/skills`，不是对本仓库的引用。
 项目升级时需要重新运行同一条 Git source `add` 命令，并提交目标项目自己的 `.agents/skills` 和 `skills-lock.json`。
 
@@ -124,9 +155,10 @@ env -u http_proxy -u https_proxy -u all_proxy \
 Git source 只包含已经提交并推送到 GitHub 的内容。
 本地未提交或未推送的 profile 变化，不能作为其它项目的升级来源。
 
-本地路径安装和软链只用于本机开发、调试或临时验证。
-只有目标项目的 `.agents` 本身是 symlink 时，才算引用源 profile。
-symlink 项目会实时跟随源 profile，不适合作为多数长期业务项目的默认模式。
+本地路径复制安装只用于验证当前未推送改动。
+不要在 profile 之间用软链替代晋级和审查：`global-runtime` 仍按
+`UPSTREAM.md` 对来源 profile 逐项同步；`codemao`、vendor、experimental
+等 profile 仍保留复制快照和 lock。
 
 不要把所有 profile 混装到业务项目，除非明确要做一次全量调试。
 
