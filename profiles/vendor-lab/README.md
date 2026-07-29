@@ -10,7 +10,5 @@ EveryInc、个人开源仓库和其它非公司来源的候选 skill 先进入�
 
 当前候选：
 
-- `grok-search`：来自 `Dianel555/DSkills` 的 MIT 许可候选；原始触发范围和
-  `toggle_builtin_tools` 写操作不直接进入全局，全局使用收窄后的本地 fork。
 - `video-shotcraft`：完整保留的外部 vendor skill。
 - `wechat-channels-download`：本地安全编排 wrapper，依赖 `ltaoo/wx_channels_download`，不内置上游二进制、证书或私钥；默认禁止隐式触发。

@@ -1,12 +1,6 @@
 {
   "version": 1,
   "skills": {
-    "grok-search": {
-      "source": "dianel555/dskills",
-      "sourceType": "github",
-      "skillPath": "skills/grok-search/SKILL.md",
-      "computedHash": "4f21492ca3e09a6120646b4b2ac0aa01b2152b5b53c541462fd871031ab2da63"
-    },
     "video-shotcraft": {
       "source": "Vincentwei1021/video-shotcraft",
       "sourceType": "github",
