@@ -128,6 +128,17 @@ candidate and selection decision is recorded, every selected segment passes
 `ffprobe`, the assembled replay duration matches the selected-duration sum, the
 final replay passes `ffprobe`, the expected event count is recorded, and no
 active `.part` remains.
+
+The standard downloader emits a 10-second health heartbeat and applies bounded
+recovery to the default parallel transfer: 120-second startup grace, 90 seconds
+without progress, five-minute rolling throughput below 1 MiB/s, or an ETA above
+one hour after ten minutes triggers a resumable retry. It makes at most three
+attempts total and preserves deterministic range chunks. If the budget is
+exhausted, `fast-start.json` and `standard-run.json` report
+`status: needs_attention` with progress, diagnostics, and a resume command.
+Treat this as an incomplete recoverable state, request human intervention, and
+do not upload or auto-shutdown. See the acquisition reference for override and
+remote-object compatibility rules.
 Stop for user login only when the public path is unavailable and the fallback page redirects to `SignIn`.
 Do not ask the user to paste cookies into chat.
 

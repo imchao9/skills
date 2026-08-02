@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI 测试文档漂移审计"
+  short_description: "审计测试框架文档与仓库结构、平台命名和用例规范是否一致"
+  default_prompt: "使用 $ai-test-doc-drift-audit 审计 ai-intelligent-test 文档与当前仓库事实之间的漂移。"

@@ -1,11 +1,59 @@
 {
   "version": 1,
   "skills": {
+    "android-device-automation": {
+      "source": "web-infra-dev/midscene-skills",
+      "sourceUrl": "https://github.com/web-infra-dev/midscene-skills",
+      "sourceType": "github",
+      "ref": "6a7496f43137efbba9f2391ac6d694e89aa439f2",
+      "skillPath": "skills/android-automation/SKILL.md",
+      "computedHash": "3a05a96fad2cbc477cffe1fa4070d9c6948ee61cea366a0976876dc565db0e4c"
+    },
+    "browser-automation": {
+      "source": "web-infra-dev/midscene-skills",
+      "sourceUrl": "https://github.com/web-infra-dev/midscene-skills",
+      "sourceType": "github",
+      "ref": "6a7496f43137efbba9f2391ac6d694e89aa439f2",
+      "skillPath": "skills/browser/SKILL.md",
+      "computedHash": "91d3d8f0cf642fc9bb59f97dd3ef4fb8498d8283bb9872882797c998deb6273f"
+    },
+    "computer-automation": {
+      "source": "web-infra-dev/midscene-skills",
+      "sourceUrl": "https://github.com/web-infra-dev/midscene-skills",
+      "sourceType": "github",
+      "ref": "6a7496f43137efbba9f2391ac6d694e89aa439f2",
+      "skillPath": "skills/computer-automation/SKILL.md",
+      "computedHash": "1341b8b2bd61d95c6cb1e56c7f4bca0061e2442a549a3f01cab8151ac7108f7f"
+    },
+    "harmonyos-device-automation": {
+      "source": "web-infra-dev/midscene-skills",
+      "sourceUrl": "https://github.com/web-infra-dev/midscene-skills",
+      "sourceType": "github",
+      "ref": "6a7496f43137efbba9f2391ac6d694e89aa439f2",
+      "skillPath": "skills/harmony-automation/SKILL.md",
+      "computedHash": "1643bc2d7828f594294ad8d4f93651b47f60f28076b078466847bef728e25664"
+    },
+    "ios-device-automation": {
+      "source": "web-infra-dev/midscene-skills",
+      "sourceUrl": "https://github.com/web-infra-dev/midscene-skills",
+      "sourceType": "github",
+      "ref": "6a7496f43137efbba9f2391ac6d694e89aa439f2",
+      "skillPath": "skills/ios-automation/SKILL.md",
+      "computedHash": "fdb685a7fda9688b977e6cd81b724bb9d4874394690bf97fad88ce44a6382e8d"
+    },
     "video-shotcraft": {
       "source": "Vincentwei1021/video-shotcraft",
       "sourceType": "github",
       "skillPath": "SKILL.md",
       "computedHash": "2e3b375ecc2c1f2b07693db09ffa919518e14e560e63bbf59db9d1a99062bdab"
+    },
+    "vitest-midscene-e2e": {
+      "source": "web-infra-dev/midscene-skills",
+      "sourceUrl": "https://github.com/web-infra-dev/midscene-skills",
+      "sourceType": "github",
+      "ref": "6a7496f43137efbba9f2391ac6d694e89aa439f2",
+      "skillPath": "skills/vitest-midscene-e2e/SKILL.md",
+      "computedHash": "187bc65ad025075bf48c82dbc679b08ddbc0c7d13aec068f2dac874807856860"
     }
   }
 }

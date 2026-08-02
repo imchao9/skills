@@ -8,6 +8,11 @@
       "skillPath": "accept-tech-plan/SKILL.md",
       "computedHash": "b454c0cc6d729926b0e592612688c124faa49e25da7bedbfac1cf76cb39d0ac0"
     },
+    "ai-intelligent-test": {
+      "source": "/Users/cm/Documents/Me/Skills/profiles/codemao/.agents/skills/ai-intelligent-test",
+      "sourceType": "local",
+      "computedHash": "68db3a3c62d73082d1d0fefa5ec19546b6b9184f0a635058c244b97807c711cc"
+    },
     "cg-gen": {
       "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
       "sourceUrl": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",

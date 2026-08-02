@@ -8,6 +8,51 @@
       "skillPath": "accept-tech-plan/SKILL.md",
       "computedHash": "b454c0cc6d729926b0e592612688c124faa49e25da7bedbfac1cf76cb39d0ac0"
     },
+    "ai-test-design-walkthrough": {
+      "source": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceUrl": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceType": "git",
+      "ref": "b583ff4030b7c0f062e155986c1b1df9d79d20a2",
+      "skillPath": ".agents/skills/ai-test-design-walkthrough/SKILL.md",
+      "computedHash": "ea599c83ca6d6ca1a282ca4f87d5b2ea0e416812249e76f59282e48508800f1f"
+    },
+    "ai-test-doc-drift-audit": {
+      "source": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceUrl": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceType": "git",
+      "ref": "b583ff4030b7c0f062e155986c1b1df9d79d20a2",
+      "skillPath": ".agents/skills/ai-test-doc-drift-audit/SKILL.md",
+      "computedHash": "c34469cc4c75f58c91b0fabb123431e65bcc891554158b611e9f4703f1147a36"
+    },
+    "ai-test-goal-workflows": {
+      "source": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceUrl": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceType": "git",
+      "ref": "b583ff4030b7c0f062e155986c1b1df9d79d20a2",
+      "skillPath": ".agents/skills/ai-test-goal-workflows/SKILL.md",
+      "computedHash": "270be88654539ce383348973e6f3a1a8dc748acbaeb1771728c33cbe66ce78d2"
+    },
+    "ai-intelligent-test": {
+      "source": "/Users/cm/Documents/Me/Skills/profiles/codemao/.agents/skills/ai-intelligent-test",
+      "sourceType": "local",
+      "computedHash": "68db3a3c62d73082d1d0fefa5ec19546b6b9184f0a635058c244b97807c711cc"
+    },
+    "ai-test-metrics": {
+      "source": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceUrl": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceType": "git",
+      "ref": "b583ff4030b7c0f062e155986c1b1df9d79d20a2",
+      "skillPath": ".agents/skills/ai-test-metrics/SKILL.md",
+      "computedHash": "93515c061bcf5de88c247b3c9ae319ae026dd0b36ed3ea8a1bbd4777aca5295f"
+    },
+    "ai-test-run-diagnosis": {
+      "source": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceUrl": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceType": "git",
+      "ref": "b583ff4030b7c0f062e155986c1b1df9d79d20a2",
+      "skillPath": ".agents/skills/ai-test-run-diagnosis/SKILL.md",
+      "computedHash": "cccacf4d7dd660a8c8e7ffc21a4c0a425ebf5751a46fd477dc1717aca3258d34"
+    },
     "cg-gen": {
       "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
       "sourceUrl": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
@@ -98,6 +143,14 @@
       "sourceType": "git",
       "skillPath": "platform-on-duty/SKILL.md",
       "computedHash": "563c5bd3f99484269d8ff2b63e7829269a0a9233b62503b31066cd859643fe5b"
+    },
+    "test-knowledge-recall": {
+      "source": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceUrl": "git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git",
+      "sourceType": "git",
+      "ref": "b583ff4030b7c0f062e155986c1b1df9d79d20a2",
+      "skillPath": ".agents/skills/test-knowledge-recall/SKILL.md",
+      "computedHash": "e9b6e69ac6ba688983095fbd2ba91e77b672644ca866fa8badbb366940ca4f4b"
     }
   }
 }

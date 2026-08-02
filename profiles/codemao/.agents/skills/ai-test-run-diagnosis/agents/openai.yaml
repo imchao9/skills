@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI 测试运行诊断"
+  short_description: "基于已有报告证据判断 AI 测试是否真正完成业务验证"
+  default_prompt: "使用 $ai-test-run-diagnosis 分析现有 AI 测试运行，区分 Runner 状态、证据完整性、目标状态和业务结论。"

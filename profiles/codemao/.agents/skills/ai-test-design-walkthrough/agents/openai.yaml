@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI 测试设计走查"
+  short_description: "运行已注册设计走查用例并验证 Figma 与真实页面证据"
+  default_prompt: "使用 $ai-test-design-walkthrough 对已注册正式用例执行 Figma 设计走查并核对报告证据。"

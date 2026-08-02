@@ -45,6 +45,34 @@ Reports retain only scheme, host, and path; query parameters are removed.
 
 The phase is complete only when the match report exists, replay validation succeeds, downloaded event count matches the report, and no active `.part` remains.
 
+### Download health and bounded recovery
+
+The standard fast path uses eight deterministic byte ranges and writes an
+atomic health heartbeat beside each segment report every 10 seconds. The
+heartbeat records bytes, percentage, rolling throughput, ETA, last progress,
+attempt number, and whether resumable chunks are retained. Signed query
+parameters are never written.
+
+After a 120-second startup grace period, the downloader treats any of these as
+unhealthy:
+
+- no byte progress for 90 seconds;
+- rolling five-minute throughput below 1 MiB/s;
+- predicted remaining time above one hour after ten minutes of observation.
+
+An unhealthy or interrupted transfer is stopped and resumed with the same URL,
+remote-object contract, range layout, and chunk files. The default budget is
+three attempts total (the initial attempt plus two automatic resumes). A resume
+is allowed only while the sanitized path, byte size, ETag, and connection count
+match `source/<segment>.mp4.chunks/manifest.json`.
+
+After the retry budget is exhausted, both the segment report and the parent
+workflow report use `status: needs_attention`, preserve all valid chunks, and
+record the reason, progress, speed, ETA, failed attempts, report paths, and
+exact resume command. This is a recoverable waiting state, not successful
+completion. Inspect the network/CDN or refresh an expired URL before resuming.
+Never auto-shutdown the machine while this state is active.
+
 ## Failure handling
 
 - Public response has no media: inspect all `MatchDetail` tabs before using the authenticated fallback.
@@ -53,3 +81,5 @@ The phase is complete only when the match report exists, replay validation succe
 - Multiple replays: never silently choose only the longest item. Distinguish duplicate long variants, chronological recording segments, pre-game tests, and official highlights; retain an explicit selection manifest.
 - Browser blob download fails on a large file: use the authenticated request URL with a streaming downloader while retaining required browser authorization in memory only.
 - Interrupted transfer: retain `.part`; resume only if the server supports byte ranges, otherwise restart that file.
+- Repeated stall, sustained low speed, or excessive ETA: let the bounded retry budget finish, then inspect the `*-health.json` and parent `needs_attention` report. Do not leave a trickling transfer running indefinitely.
+- Remote size, ETag, URL path, or range layout changed: do not combine retained chunks with the new object. Inspect the source, then explicitly quarantine or remove stale chunks before starting a fresh download.

@@ -7,6 +7,7 @@
 
 | Runtime scope | Canonical source | Policy |
 | --- | --- | --- |
+| `ai-intelligent-test` | `profiles/codemao/.agents/skills/ai-intelligent-test`，内部执行框架 `git@gitlab.codemao.cn:frontend/student/ai-intelligent-test.git` | `local-fork`：只维护跨项目入口、仓库定位和 backend 路由；内部 6 个 repo skills 留在 `profiles/codemao` 跟随来源，不整体复制到运行态。 |
 | `agent-reach` | `profiles/web/.agents/skills/agent-reach` | `follow`：先更新正式 profile，再完整同步到运行态；个人触发、重试和时间预算放在 `/Users/cm/.codex/AGENTS.md`，不修改运行副本。 |
 | `technical-html-deck` | `profiles/ppt/.agents/skills/technical-html-deck` | `follow`：正式 profile 验证通过后完整同步。 |
 | `drawio-skill` | `profiles/ppt/.agents/skills/drawio-skill`，上游 `Agents365-ai/drawio-skill` | `follow-after-review`：只作为 `technical-html-deck` 的可编辑技术图 renderer；保持显式触发和本地窄 wrapper。 |

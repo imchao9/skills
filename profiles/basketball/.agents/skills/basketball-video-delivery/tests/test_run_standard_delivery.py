@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "run_standard_delivery.py"
@@ -214,6 +216,57 @@ class RunStandardDeliveryTest(unittest.TestCase):
             self.assertTrue(delivery.manifest_is_current(manifest, [artifact]))
             artifact.write_bytes(b"new")
             self.assertFalse(delivery.manifest_is_current(manifest, [artifact]))
+
+    def test_standard_run_propagates_download_needs_attention(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            run_dir = workspace / "runs" / "400377608"
+            fast_report = run_dir / "output" / "delivery" / "fast-start.json"
+
+            def failed_fast_start(name: str, command: list[str], log: Path) -> dict:
+                self.assertEqual(name, "fast_start")
+                fast_report.parent.mkdir(parents=True, exist_ok=True)
+                fast_report.write_text(json.dumps({
+                    "status": "needs_attention",
+                    "reason": "sustained_low_throughput",
+                    "download_report": "/tmp/download.json",
+                    "health_report": "/tmp/health.json",
+                    "download": {
+                        "downloaded_bytes": 123,
+                        "total_bytes": 1000,
+                        "progress_percent": 12.3,
+                        "speed_mib_per_second": 0.24,
+                        "attempt": 3,
+                        "max_attempts": 3,
+                        "chunks_preserved": True,
+                    },
+                    "action_required": "inspect network or CDN, then resume",
+                }), encoding="utf-8")
+                raise RuntimeError("fast_start failed with exit 3")
+
+            argv = [
+                "run_standard_delivery.py",
+                "400377608",
+                "--workspace",
+                str(workspace),
+            ]
+            with (
+                mock.patch.object(sys, "argv", argv),
+                mock.patch.object(delivery, "ensure_tools"),
+                mock.patch.object(delivery, "run", side_effect=failed_fast_start),
+            ):
+                self.assertEqual(delivery.main(), 4)
+
+            standard_report = json.loads(
+                (run_dir / "output" / "delivery" / "standard-run.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(standard_report["status"], "needs_attention")
+            self.assertEqual(standard_report["phase"], "replay_download")
+            self.assertTrue(standard_report["chunks_preserved"])
+            self.assertFalse(standard_report["auto_shutdown_allowed"])
+            self.assertEqual(standard_report["attempt"], 3)
+            self.assertEqual(standard_report["max_attempts"], 3)
+            self.assertIn("run_standard_delivery.py", standard_report["resume_command"])
 
 
 if __name__ == "__main__":

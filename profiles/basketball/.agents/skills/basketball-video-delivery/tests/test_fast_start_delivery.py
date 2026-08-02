@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "fast_start_delivery.py"
@@ -137,6 +140,48 @@ class FastStartDeliveryTest(unittest.TestCase):
         data = {"raw": {"details": {"集锦": {"modeData": []}}}}
         with self.assertRaisesRegex(fast_start.ReplayUnavailableError, "no replay URL"):
             fast_start.select_replay(data)
+
+    def test_acquire_replays_surfaces_download_needs_attention(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_dir = root / "runs" / "400377608"
+            source = run_dir / "source" / "match.mp4"
+
+            def failed_download(
+                name: str,
+                command: list[str],
+                log: Path,
+                stdin_text: str | None = None,
+            ) -> dict:
+                report = Path(command[command.index("--report") + 1])
+                health = Path(command[command.index("--health-report") + 1])
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(json.dumps({
+                    "status": "needs_attention",
+                    "reason": "no_progress",
+                    "health_report": str(health),
+                    "downloaded_bytes": 256,
+                    "total_bytes": 1024,
+                    "attempts": 3,
+                    "chunks_preserved": True,
+                }), encoding="utf-8")
+                raise RuntimeError("download failed with exit 3")
+
+            with (
+                mock.patch.object(fast_start, "probe", return_value=None),
+                mock.patch.object(fast_start, "run_logged", side_effect=failed_download),
+            ):
+                with self.assertRaises(fast_start.ReplayDownloadNeedsAttention) as caught:
+                    fast_start.acquire_replays(
+                        [{"id": "segment", "url": "https://example/replay.mp4?secret=1"}],
+                        source,
+                        run_dir,
+                        8,
+                    )
+
+            self.assertEqual(caught.exception.payload["status"], "needs_attention")
+            self.assertTrue(caught.exception.payload["chunks_preserved"])
+            self.assertEqual(caught.exception.payload["attempts"], 3)
 
 
 if __name__ == "__main__":

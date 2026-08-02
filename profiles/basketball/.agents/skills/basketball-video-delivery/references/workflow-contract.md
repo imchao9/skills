@@ -16,6 +16,7 @@ output/delivery/                sanitized delivery and sync reports
 | Phase | Complete when |
 | --- | --- |
 | fast-start | Latest match data is saved, acquisition passes, deterministic preflight finishes or is explicitly skipped, and `fast-start.json` says `ready_for_ai` |
+| download-health | Heartbeat is current while running; a completed segment has 100% bytes and no retained chunks; `needs_attention` remains incomplete and blocks downstream work and shutdown |
 | review-draft | Pure proxy cut, player reports, labeled 1080p game-highlight draft/contact sheet, commentary HTML/PNG, and `ai-review.json` exist |
 | AI review | `ai-review.json` says `approved`; all four quality flags are true; referenced artifacts pass structural checks |
 | acquire | Every replay candidate is classified, every selected segment and the assembled final `.mp4` pass validation, assembled duration matches the selected-duration sum, and no active `.part` remains |
@@ -36,12 +37,17 @@ output/delivery/                sanitized delivery and sync reports
 - Upload explicit deliverables, never a broad working directory.
 - Check free space before proxying or rendering.
 - Treat successful command exit as necessary but not sufficient; inspect command output and verify artifacts.
+- Permit automatic shutdown only after the requested terminal delivery state is complete. `running`, `retrying`, `needs_attention`, and either visual-review waiting state must keep the machine available.
 
 ## Resume decision
 
 Inspect the phase gate artifacts in order.
 Resume at the first incomplete gate.
 If a gate artifact exists but validation fails, quarantine or write a new output rather than silently accepting or overwriting it.
+For replay downloads, reuse retained range chunks only when their manifest still
+matches the current remote size, ETag, sanitized path, and range layout. Retry a
+health failure at most within the configured attempt budget; after that, expose
+`needs_attention` for human diagnosis instead of looping forever.
 
 ## AI entry boundary
 

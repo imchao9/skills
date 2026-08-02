@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI 测试成效统计"
+  short_description: "采集、核对并提交 AI 辅助需求测试的成效指标与运行明细"
+  default_prompt: "使用 $ai-test-metrics 采集、核对并提交 ai-intelligent-test 的 AI 测试成效数据。"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "测试知识召回"
+  short_description: "在生成、修复或调试业务用例前召回项目知识、相似用例和失败经验"
+  default_prompt: "使用 $test-knowledge-recall 在修改业务测试用例前召回项目知识、相似用例和失败经验。"

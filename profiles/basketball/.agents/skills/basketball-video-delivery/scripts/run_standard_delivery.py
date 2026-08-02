@@ -43,6 +43,15 @@ class WaitingForFinalVisualReview(RuntimeError):
         self.evidence = evidence
 
 
+class WaitingForDownloadAttention(RuntimeError):
+    """Raised when replay chunks are preserved but acquisition needs intervention."""
+
+    def __init__(self, report: Path, payload: dict[str, Any]) -> None:
+        super().__init__(str(payload.get("reason") or "replay download needs attention"))
+        self.report = report
+        self.payload = payload
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("match", help="Xiaoqiumi match URL or numeric match ID")
@@ -470,7 +479,8 @@ def validate_review_artifacts(review: dict[str, Any]) -> None:
     except ValueError:
         duration = -1
     clusters = [row.get("cluster") for row in selection_rows]
-    if len(teams) < 2:
+    represents_both_teams = any(team in {"双方", "两队"} for team in teams)
+    if len(teams) < 2 and not represents_both_teams:
         errors.append(f"game highlight must represent both teams, got {sorted(teams)}")
     if not 480 <= duration <= 570:
         errors.append(f"game highlight selection must be 480-570 seconds, got {duration:.3f}")
@@ -750,11 +760,18 @@ def main() -> int:
                 else {}
             )
             if fast.get("status") != "ready_for_ai":
-                payload["stages"].append(run(
-                    "fast_start",
-                    [sys.executable, str(FAST_START), args.match, "--workspace", str(workspace)],
-                    logs / "standard-run-fast-start.log",
-                ))
+                try:
+                    payload["stages"].append(run(
+                        "fast_start",
+                        [sys.executable, str(FAST_START), args.match, "--workspace", str(workspace)],
+                        logs / "standard-run-fast-start.log",
+                    ))
+                except RuntimeError:
+                    if fast_report_path.is_file():
+                        fast_failure = json.loads(fast_report_path.read_text(encoding="utf-8"))
+                        if fast_failure.get("status") == "needs_attention":
+                            raise WaitingForDownloadAttention(fast_report_path, fast_failure)
+                    raise
         if not fast_report_path.is_file():
             raise FileNotFoundError(f"missing fast-start report: {fast_report_path}")
         fast = json.loads(fast_report_path.read_text(encoding="utf-8"))
@@ -848,6 +865,36 @@ def main() -> int:
         write_json(report, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
+    except WaitingForDownloadAttention as exc:
+        fast_failure = exc.payload
+        download = fast_failure.get("download") or {}
+        payload.update({
+            "status": "needs_attention",
+            "phase": "replay_download",
+            "reason": str(exc),
+            "fast_start_report": str(exc.report.resolve()),
+            "download_report": fast_failure.get("download_report"),
+            "health_report": fast_failure.get("health_report"),
+            "downloaded_bytes": download.get("downloaded_bytes"),
+            "total_bytes": download.get("total_bytes"),
+            "progress_percent": download.get("progress_percent"),
+            "speed_mib_per_second": download.get("speed_mib_per_second"),
+            "eta_seconds": download.get("eta_seconds"),
+            "attempt": download.get("attempt"),
+            "max_attempts": download.get("max_attempts"),
+            "chunks_preserved": download.get("chunks_preserved", True),
+            "action_required": fast_failure.get("action_required"),
+            "resume_command": shlex.join([
+                sys.executable, str(Path(__file__).resolve()), args.match,
+                "--workspace", str(workspace),
+                *(["--target", args.target] if args.target else []),
+                *(["--execute-upload"] if args.execute_upload else []),
+            ]),
+            "auto_shutdown_allowed": False,
+        })
+        write_json(report, payload)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 4
     except WaitingForFinalVisualReview as exc:
         payload.update({
             "status": "waiting_for_final_visual_review",

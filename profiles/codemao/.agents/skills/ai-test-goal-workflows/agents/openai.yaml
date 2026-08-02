@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI 测试目标工作流"
+  short_description: "按代码差异验收或 QA 用例真值选择并执行 AI 测试目标工作流"
+  default_prompt: "使用 $ai-test-goal-workflows 为 ai-intelligent-test 选择目标工作流并执行覆盖评审或 QA 用例转换。"

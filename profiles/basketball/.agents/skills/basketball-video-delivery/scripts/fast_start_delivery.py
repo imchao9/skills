@@ -31,12 +31,28 @@ class ReplayUnavailableError(ValueError):
     """Raised when refreshed public match data does not contain a replay yet."""
 
 
+class ReplayDownloadNeedsAttention(RuntimeError):
+    """Raised when replay chunks are preserved but automatic recovery is exhausted."""
+
+    def __init__(self, report: Path, payload: dict[str, Any]) -> None:
+        super().__init__(str(payload.get("reason") or payload.get("error") or "download needs attention"))
+        self.report = report
+        self.payload = payload
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("match", help="Xiaoqiumi match URL or numeric match ID.")
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--event-workers", type=int, default=8)
     parser.add_argument("--replay-connections", type=int, default=8)
+    parser.add_argument("--replay-download-attempts", type=int, default=3)
+    parser.add_argument("--replay-stall-seconds", type=float, default=90)
+    parser.add_argument("--replay-slow-window-seconds", type=float, default=300)
+    parser.add_argument("--replay-min-speed-mib", type=float, default=1.0)
+    parser.add_argument("--replay-health-grace-seconds", type=float, default=120)
+    parser.add_argument("--replay-max-eta-seconds", type=float, default=3600)
+    parser.add_argument("--replay-eta-grace-seconds", type=float, default=600)
     parser.add_argument("--download-only", action="store_true", help="Stop before deterministic editing preflight.")
     parser.add_argument("--skip-event-clips", action="store_true", help="Download only the full replay, not platform event videos.")
     parser.add_argument("--skip-pure-preflight", action="store_true")
@@ -269,6 +285,7 @@ def acquire_replays(
     source: Path,
     run_dir: Path,
     connections: int,
+    download_options: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     delivery = run_dir / "output" / "delivery"
     stages: list[dict[str, Any]] = []
@@ -289,22 +306,35 @@ def acquire_replays(
                 "path": str(segment),
             })
             continue
-        stages.append(run_logged(
-            f"download_replay_segment_{index:02d}",
-            [
-                sys.executable,
-                str(DOWNLOAD_REPLAY),
-                "--output",
-                str(segment),
-                "--url-stdin",
-                "--report",
-                str(delivery / f"xiaoqiumi-download-{index:02d}.json"),
-                "--connections",
-                str(connections),
-            ],
-            delivery / "logs" / f"download-replay-{index:02d}.log",
-            stdin_text=str(replay["url"]) + "\n",
-        ))
+        report = delivery / f"xiaoqiumi-download-{index:02d}.json"
+        health_report = delivery / f"xiaoqiumi-download-{index:02d}-health.json"
+        command = [
+            sys.executable,
+            str(DOWNLOAD_REPLAY),
+            "--output",
+            str(segment),
+            "--url-stdin",
+            "--report",
+            str(report),
+            "--health-report",
+            str(health_report),
+            "--connections",
+            str(connections),
+        ]
+        command.extend(download_options or [])
+        try:
+            stages.append(run_logged(
+                f"download_replay_segment_{index:02d}",
+                command,
+                delivery / "logs" / f"download-replay-{index:02d}.log",
+                stdin_text=str(replay["url"]) + "\n",
+            ))
+        except RuntimeError:
+            if report.is_file():
+                download_payload = json.loads(report.read_text(encoding="utf-8"))
+                if download_payload.get("status") == "needs_attention":
+                    raise ReplayDownloadNeedsAttention(report, download_payload)
+            raise
 
     if len(segment_paths) > 1:
         if probe(source) is None:
@@ -466,6 +496,15 @@ def main() -> int:
         }
         write_json(delivery / "replay-selection.json", replay_selection)
 
+        replay_download_options = [
+            "--max-attempts", str(args.replay_download_attempts),
+            "--stall-seconds", str(args.replay_stall_seconds),
+            "--slow-window-seconds", str(args.replay_slow_window_seconds),
+            "--min-speed-mib", str(args.replay_min_speed_mib),
+            "--health-grace-seconds", str(args.replay_health_grace_seconds),
+            "--max-eta-seconds", str(args.replay_max_eta_seconds),
+            "--eta-grace-seconds", str(args.replay_eta_grace_seconds),
+        ]
         download_tasks: dict[str, Callable[[], list[dict[str, Any]]]] = {}
         if probe(source) is None:
             download_tasks["replay"] = lambda: acquire_replays(
@@ -473,6 +512,7 @@ def main() -> int:
                 source,
                 run_dir,
                 args.replay_connections,
+                replay_download_options,
             )
         else:
             stages.append({"name": "download_replays", "status": "cached", "path": str(source)})
@@ -533,6 +573,44 @@ def main() -> int:
             "status", "matchID", "seconds", "source", "event_count", "ai_review"
         )}, ensure_ascii=False, indent=2))
         return 0
+    except ReplayDownloadNeedsAttention as exc:
+        download = exc.payload
+        partial_files = sorted(str(path) for path in (run_dir / "source").rglob("*.part"))
+        payload.update({
+            "status": "needs_attention",
+            "phase": "replay_download",
+            "seconds": round(time.monotonic() - started, 3),
+            "reason": str(exc),
+            "download_report": str(exc.report),
+            "health_report": download.get("health_report"),
+            "download": {
+                key: download.get(key)
+                for key in (
+                    "downloaded_bytes", "total_bytes", "progress_percent",
+                    "speed_mib_per_second", "eta_seconds", "attempt",
+                    "max_attempts", "chunks_preserved", "failures",
+                )
+            },
+            "partial_files": partial_files,
+            "stages": stages,
+            "action_required": (
+                "Inspect network/CDN health. Resume with the command below; retained chunks "
+                "will be reused when the remote object and range layout are unchanged."
+            ),
+            "auto_shutdown_allowed": False,
+            "resume_command": shlex.join([sys.executable, str(Path(__file__).resolve()), str(match_id),
+                                            "--workspace", str(workspace)]),
+        })
+        write_json(report, payload)
+        print(json.dumps({
+            "status": payload["status"],
+            "matchID": match_id,
+            "phase": payload["phase"],
+            "reason": payload["reason"],
+            "download": payload["download"],
+            "resume_command": payload["resume_command"],
+        }, ensure_ascii=False, indent=2))
+        return 3
     except ReplayUnavailableError as exc:
         match = data.get("match", {})
         payload.update({

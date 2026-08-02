@@ -28,7 +28,45 @@ Then ask only the route-specific readiness question:
 
 Never request the key or enrollment-code value during intake. Ask for the value only after the plan is accepted and protected execution begins.
 
-Run this if a terminal-guided intake is preferred:
+When the installer repository checkout is available, prefer its guided planner. It asks the four answers and prints a profile-specific assessment command without contacting a target or accepting secrets:
+
+```bash
+bash /path/to/openclaw-installer/scripts/install-wizard.sh
+```
+
+For a non-interactive handoff, pass an install card and credential-presence flags only:
+
+```bash
+bash /path/to/openclaw-installer/scripts/install-wizard.sh \
+  --card M26A-VPN-MR-CORE \
+  --matrixrouter-openai present \
+  --matrixrouter-anthropic present
+```
+
+Review and complete the generated `assess` command before explicitly running any `apply` command.
+
+For a trusted colleague who should execute the full installation independently, use the repository-owned delegated entry point instead. It creates a temporary `0600` inventory from `USER@HOST`, prompts for passwords locally, runs assessment, and requires them to type `APPLY` before changing the target:
+
+```bash
+bash /path/to/openclaw-installer/scripts/delegated-install.sh \
+  --host mac@10.240.33.205 \
+  --card M26A-VPN-MR-CORE \
+  --matrixrouter-openai present \
+  --matrixrouter-anthropic present
+```
+
+The colleague needs access to the approved private installer checkout and only the secrets required for that installation. Do not distribute a personal long-lived credential bundle when a per-run or per-machine package can be used.
+
+When the colleague should install from their own Mac without receiving the full repository, build the HTTP operator bundle. It excludes `upload-packages/` and `.package-build/`; the package URL is requested at runtime when omitted:
+
+```bash
+bash scripts/build-delegated-installer-bundle.sh \
+  --output /secure-transfer/openclaw-delegated-installer.tar.gz
+```
+
+The archive contains private configuration. Confirm the private-secret scope first, transfer it only through an approved secure channel, and provide a reachable package HTTP endpoint before installation.
+
+Use the collector only when the repository checkout is unavailable:
 
 ```bash
 python3 scripts/collect_install_brief.py
