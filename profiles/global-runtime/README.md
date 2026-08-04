@@ -17,6 +17,12 @@
 外部来源 skill 的 canonical source、本地 fork 和升级策略记录在 `UPSTREAM.md`。
 更新运行态前先查看该文件，不要把来源 profile 整体盲目覆盖到这里。
 
+`global-runtime` 不保留 profile 级 `skills-lock.json`。Vercel `skills` CLI 会把
+该 lock 中列出的 `.agents/skills` 识别为当前项目已经安装的 skill，并在
+`skills add --list` 中隐藏它们，导致组合 profile 无法完整分发。来源 revision
+和 hash 继续保存在各来源 profile 的 lock 中，运行态同步关系记录在
+`UPSTREAM.md`。
+
 公司 GitLab skill 当前从以下来源安装：
 
 ```text
