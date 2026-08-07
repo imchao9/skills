@@ -13,8 +13,11 @@
 | `drawio-skill` | `profiles/ppt/.agents/skills/drawio-skill`，上游 `Agents365-ai/drawio-skill` | `follow-after-review`：只作为 `technical-html-deck` 的可编辑技术图 renderer；保持显式触发和本地窄 wrapper。 |
 | `fireworks-tech-graph` | `profiles/ppt/.agents/skills/fireworks-tech-graph`，上游 `yizhiyanhua-ai/fireworks-tech-graph` | `follow-after-review`：只作为 `technical-html-deck` 的语义 SVG renderer；保持显式触发和本地窄 wrapper。 |
 | 与 `profiles/mattpocock-skills` 同名且未列入例外的 skill | `profiles/mattpocock-skills/.agents/skills/<name>` | `follow-after-review`：来源 profile 更新后逐项看 diff，再同步到运行态；禁止整个目录盲目覆盖。 |
+| `ask-matt` | `profiles/mattpocock-skills/.agents/skills/ask-matt` | `local-fork`：保留当前窄路由；上游新增的 phase/subagent 编排和隐式 `wizard` 路由只做人工 diff，不自动同步。 |
+| `grilling` | `profiles/mattpocock-skills/.agents/skills/grilling` | `local-fork`：保留一次一个问题的交互，避免一次抛出整轮 frontier 问题；上游只做人工 diff。 |
+| `wizard` | `profiles/mattpocock-skills/.agents/skills/wizard` | `local-fork`：保持 `disable-model-invocation: true` 和显式调用门禁；涉及凭证、CI secret、第三方控制台或不可逆操作时必须由用户明确触发。 |
 | `grok-research` | `profiles/experimental/.agents/skills/grok-research` | `follow-after-review`：本地自研的 OpenCLI Browser Bridge 研究流程；保持 Grok 显式触发、X/YouTube 窄范围、原始链接核验和浏览器状态护栏，来源版本验证后完整同步。 |
-| `obsidian-vault` | Local maintained fork of `profiles/mattpocock-skills/.agents/skills/obsidian-vault` | `local-fork`：不允许上游覆盖；上游只用于人工 diff；本地版本负责真实 vault 路径、结构保护和 Codex-Memory 规则。 |
+| `obsidian-vault` | Local maintained fork of the former `mattpocock/skills` implementation | `local-fork`：上游已移除同名 skill；本地版本继续负责真实 vault 路径、结构保护和 Codex-Memory 规则，不随来源 profile 删除。 |
 | `codemao-troubleshoot` | `profiles/codemao/.agents/skills/codemao-troubleshoot` | `local-fork`：业务逻辑继续人工跟随公司来源；运行态 `package-lock.json` 将间接依赖 `ip-address` 锁定到 `10.4.0`，修复已知 SSRF/地址分类绕过风险，上游刷新不得降级该安全修复。 |
 | `accept-tech-plan`、`cg-gen`、`cg-req`、`codemao-learning`、`dingtalk-mcp-reader`、`feign-client-example-generator`、`java-backend-code-review`、`java-backend-knowledge-base`、`market-live-report-skill` | `git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git`，经 `profiles/codemao` 维护 | `follow-after-review`：先刷新公司 profile、清理 `data/`、`output/` 和缓存等运行产物，再逐项同步到运行态。`codemao-learning` 已同步到来源 profile 记录的 upstream commit `882508ed31f992fd5212d13d281f287368ccb1cf`；其余全局副本仍基于 `64a5c38db558820cccd2de87b002ad1fadb82904` 或保持各自已审查版本。 |
 
@@ -39,8 +42,8 @@
 `design-an-interface`、`qa`、`request-refactor-plan` 和 `ubiquitous-language` 仍保留在 `profiles/mattpocock-skills` 的上游镜像中，但不进入 `global-runtime`。
 它们位于 matt 上游的 deprecated 分组；如需恢复到运行态，必须重新说明使用场景并人工评估。
 
-`profiles/mattpocock-skills` 当前基于 upstream commit `ed37663`。
-除 `obsidian-vault` 本地 fork 外，运行态中与 matt source 同名的 skill 已同步到该来源。
+`profiles/mattpocock-skills` 当前基于 upstream commit `84fdeffd12f2ee307994d1eb6feb48173b6e0502`。
+2026-08-08 审查后，除 `ask-matt`、`grilling`、`wizard` 和 `obsidian-vault` 本地 fork 外，运行态中已存在且仍由 matt source 提供的同名 skill 已同步到该来源。上游新增的 `wait-what`、`writing-for-agents` 尚未晋级全局；上游已移除且没有本地 fork 的 `batch-grill-me`、`edit-article`、`writing-great-skills` 已从运行态移除。
 
 如果一个运行态 skill 不属于上述来源族，先通过 Git 历史和真实来源补充记录，再执行升级。
 
