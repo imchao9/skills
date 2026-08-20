@@ -12,5 +12,12 @@
     "repo_slug": "platform-informatization-manage-system",
     "team": "platform-informatization",
     "updated_at": "2026-07-15T08:59:43.001810+00:00"
+  },
+  "git@gitlab.codemao.cn:backend/platform-informatization/tool/cm-aihub.git": {
+    "repo_key": "git@gitlab.codemao.cn:backend/platform-informatization/tool/cm-aihub.git",
+    "repo_name": "cm-aihub",
+    "repo_slug": "cm-aihub",
+    "team": "platform-informatization",
+    "updated_at": "2026-08-20T03:04:58.057357+00:00"
   }
 }
