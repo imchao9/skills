@@ -52,14 +52,35 @@ def file_fingerprint(path: Path, *, with_hash: bool = False) -> dict[str, Any]:
     return result
 
 
+def parse_seconds(value: str) -> float:
+    """Accept raw seconds or MM:SS / HH:MM:SS timecodes."""
+    text = str(value).strip()
+    parts = text.split(":")
+    if len(parts) == 1:
+        return float(text)
+    if len(parts) not in (2, 3):
+        raise ValueError(f"invalid timecode: {value}")
+    numbers = [float(part) for part in parts]
+    if any(number < 0 for number in numbers):
+        raise ValueError(f"invalid timecode: {value}")
+    if len(numbers) == 2:
+        minutes, seconds = numbers
+        hours = 0.0
+    else:
+        hours, minutes, seconds = numbers
+    if minutes >= 60 or seconds >= 60:
+        raise ValueError(f"invalid timecode: {value}")
+    return hours * 3600 + minutes * 60 + seconds
+
+
 def read_delete_ranges(path: Path) -> list[tuple[float, float, str]]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     ranges: list[tuple[float, float, str]] = []
     for index, row in enumerate(rows, start=2):
         try:
-            start = float(row["start"])
-            end = float(row["end"])
+            start = parse_seconds(row["start"])
+            end = parse_seconds(row["end"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"invalid delete range at row {index}") from exc
         if start < 0 or end <= start:
@@ -217,7 +238,10 @@ def render_evidence(
             else SEAM_OFFSETS
         )
         for offset in offsets:
-            timestamp = min(max(0.0, seam["output_time"] + offset), max(0.0, pure_duration - 0.05))
+            # Seeking only a few frames before EOF is unreliable for some H.264
+            # files because the demuxer may not return a decodable frame. Keep
+            # end-of-video seam evidence safely inside the final GOP.
+            timestamp = min(max(0.0, seam["output_time"] + offset), max(0.0, pure_duration - 0.5))
             frame = frames_dir / f"pure-seam-{seam['index']:03d}-{offset:+.2f}.jpg"
             extract_frame(pure, timestamp, frame)
             cards.append({

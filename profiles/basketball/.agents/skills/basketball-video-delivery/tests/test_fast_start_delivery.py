@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,6 +20,91 @@ SPEC.loader.exec_module(fast_start)
 
 
 class FastStartDeliveryTest(unittest.TestCase):
+    def test_default_cli_path_builds_players_directly_without_downloading_event_mp4s(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            match_id = 400000001
+            run_dir = root / "runs" / str(match_id)
+            source = run_dir / "source" / "比赛回放.mp4"
+            source.parent.mkdir(parents=True)
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15:duration=20",
+                    "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=44100:duration=20",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", str(source),
+                ],
+                check=True,
+            )
+            thumbnail = root / "event.jpg"
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", "10", "-i", str(source), "-frames:v", "1", str(thumbnail),
+                ],
+                check=True,
+            )
+            fixture = root / "fixture-match.json"
+            fixture.write_text(json.dumps({
+                "players": {"home": [{
+                    "playerNo": "23", "playerName": "小明", "twoShotNum": 1,
+                    "threeShotNum": 0, "assists": 0, "steals": 0, "blocks": 0,
+                }]},
+                "raw": {"details": {"集锦": {"modeData": [{"videos": {
+                    "playBacks": [{
+                        "id": "replay-1", "title": "比赛回放", "time": "1200",
+                        "url": "https://example.invalid/replay.mp4", "authorUserID": "phone",
+                        "addDate": "2026-08-02 12:00:00",
+                    }],
+                    "collectVideos": [{
+                        "id": "event-1", "title": "测试队 23号 小明 2分命中 第一节 11:47",
+                        "teamName": "测试队", "shirtNo": "23", "reletedPlayerName": "小明",
+                        "subName": "2分命中", "urlThumbnail": thumbnail.as_uri(),
+                        "url": "https://example.invalid/event.mp4",
+                    }],
+                }}]}}},
+            }, ensure_ascii=False), encoding="utf-8")
+            fake_fetch = root / "fake_fetch.py"
+            fake_fetch.write_text(
+                "import os, shutil, sys\n"
+                "from pathlib import Path\n"
+                "shutil.copyfile(os.environ['FAST_START_FIXTURE_MATCH'], sys.argv[sys.argv.index('--out') + 1])\n"
+                "Path(sys.argv[sys.argv.index('--facts-md') + 1]).write_text('fixture\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            argv = [
+                str(SCRIPT), str(match_id), "--workspace", str(root),
+                "--skip-pure-preflight",
+            ]
+            with (
+                mock.patch.object(fast_start, "FETCH_MATCH", fake_fetch),
+                mock.patch.object(sys, "argv", argv),
+                mock.patch.dict(os.environ, {"FAST_START_FIXTURE_MATCH": str(fixture)}),
+            ):
+                self.assertEqual(fast_start.main(), 0)
+
+            report = json.loads(
+                (run_dir / "output" / "delivery" / "fast-start.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["status"], "ready_for_ai")
+            self.assertEqual(report["event_source"], "direct")
+            self.assertEqual(report["event_metadata_count"], 1)
+            self.assertEqual(report["event_download_count"], 0)
+            disk_stage = next(stage for stage in report["stages"] if stage["name"] == "disk_preflight")
+            self.assertEqual(disk_stage["status"], "complete")
+            self.assertGreater(disk_stage["required_free_bytes"], 0)
+            self.assertFalse((run_dir / "source" / "labeled-events").exists())
+            self.assertTrue(
+                (run_dir / "output" / "player-clips-front15" / "个人精彩集锦" / "小明-个人精彩集锦_数据标注版.mp4").is_file()
+            )
+            event_dir = run_dir / "output" / "player-clips-front15" / "个人精彩片段"
+            self.assertFalse(any(event_dir.glob("*.mp4")))
+            players_csv = (
+                run_dir / "output" / "player-clips-front15" / "reports" / "players.csv"
+            ).read_text(encoding="utf-8")
+            self.assertIn("per_player_temporary", players_csv)
+            self.assertIn("data_labeled", players_csv)
+
     def test_match_id_from_hash_url(self) -> None:
         ref = "https://www.xiaoqiumi.com/#/Match/MatchVideoList?matchID=400359919&sportType=1"
         self.assertEqual(fast_start.match_id_from_ref(ref), 400359919)

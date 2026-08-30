@@ -20,9 +20,9 @@ Collect or infer:
 The default package for every full match is mandatory:
 
 1. Pure-play cut.
-2. One personal reel per player with valid located events.
+2. One data-labeled personal reel per player with valid located events.
 3. One 8-10 minute match-wide game highlight, data-labeled and 1920×1080.
-4. Commentary Markdown plus standalone HTML and browser-rendered PNG poster.
+4. Commentary Markdown, a passed fact-audit JSON, standalone HTML, and browser-rendered PNG poster.
 
 Team-only reels and remade event fragments are optional unless requested.
 Do not report completion when any default-package item is missing or invalid.
@@ -30,6 +30,19 @@ Read [references/default-delivery-prompt.md](references/default-delivery-prompt.
 when the user asks for the reusable prompt or when orchestrating multiple games.
 
 Never store Xiaoqiumi cookies, signed URLs, Baidu cookies, BDUSS, STOKEN, or passwords in the workspace or reports.
+
+Viewer-facing event clips, personal reels, team reels, and game highlights must
+all include team, player/number, action, period, and game clock labels. Raw
+clips may exist only as regenerable intermediates. The standard validator must
+reject raw personal reels, missing `data_label_status`, and any final filename
+that does not identify itself as `数据标注版`.
+
+The commentary renderer must write `*_球评审校.json` and stop on any fact
+error. The audit must reconcile displayed period totals with the final score,
+hide zero-score OT placeholders when four quarters already equal the final,
+check attempts-before-makes prose and three-point score-gap claims, and flag
+zero-valued unreliable fields. Do not use `GAME MVP` unless the upstream data
+explicitly names an official MVP; otherwise use `胜方核心` or `全场焦点`.
 
 ## Fast path
 
@@ -48,8 +61,10 @@ reviewable drafts, and exits with status 2 plus
 `output/delivery/ai-review.json`. Inspect the listed proxy video, contact
 sheets, reports, commentary HTML, and PNG in one AI checkpoint. Edit referenced
 CSV or Markdown files when needed, run the generated `refresh_review_command`,
-inspect the regenerated draft, then set
-`status` to `approved` and all quality flags to `true`.
+inspect the regenerated draft, then set `status` to `approved` and all quality
+flags to `true`. For player clips this specifically requires
+`exceptions_reviewed`, `clock_approved`, and `identity_approved`; identity
+approval means every scoring frame in `action-evidence.json` was inspected.
 
 Run the exact `resume_command` from `output/delivery/standard-run.json`.
 The second invocation renders or reuses final 1080p outputs, fully decodes every
@@ -82,12 +97,46 @@ python3 "$SKILL_DIR/scripts/fast_start_delivery.py" \
   --workspace "$PWD"
 ```
 
-The starter always refreshes match data first. It downloads the replay and
-labeled events concurrently, reuses validated files, and runs pure-cut
-preflight and player-clip build concurrently. AI enters only after
+The starter always refreshes match data first. By default it downloads only the
+replay, locates player-labeled events from metadata and thumbnails, and cuts
+them directly from that replay. Platform event MP4s are not downloaded unless
+`--event-source platform` is explicitly selected as a fallback. It reuses
+validated files and runs pure-cut preflight and player-clip build concurrently. AI enters only after
 `output/delivery/fast-start.json` reports `ready_for_ai`.
 Use `--download-only` when the immediate goal is to obtain the source files without starting video processing.
 Open a browser only when the public data path fails or reports that authenticated fallback is required.
+
+For a single-event event-direct tracer, without downloading platform event
+videos, run:
+
+```bash
+python3 "$SKILL_DIR/scripts/build_event_direct_tracer.py" \
+  --match-json "runs/<matchID>/output/match.json" \
+  --source "runs/<matchID>/source/<full-replay>.mp4" \
+  --event-id "<collectVideos event id>" \
+  --output-dir "runs/<matchID>/output/event-direct-tracer"
+```
+
+The command aligns Xiaoqiumi event thumbnails against the full replay, selects
+exactly one event, cuts the event and one-player reel directly from that replay,
+fully decodes both outputs, and writes `event-direct-report.json` plus a contact
+sheet. Pass `--locations-csv` only to reuse a previously reviewed locator CSV.
+The report must say `platform_event_download_count: 0`; this tracer never fetches
+the platform event MP4. Do not expand to a full match until its visual event hit
+and pre/post window have been accepted.
+
+Before deterministic rendering, fast-start writes a `disk_preflight` stage with
+available, estimated output/peak, reserve, required-free, and shortfall bytes.
+Insufficient space reports `needs_attention`, retains the replay, blocks upload
+and auto-shutdown, and provides a resume command. Expensive standard-run caches
+use content fingerprints rather than mtimes, so refreshing unchanged match JSON
+does not invalidate valid renders.
+
+When fewer than five trustworthy player-labeled events are available, or player
+identity is absent, do not invent personal reels. The report uses
+`phase=event_location`, marks the standard package blocked, records multi-segment
+assembly evidence, and offers platform clips only as references plus a pure-only
+command. Human identity review is required before full delivery.
 
 For multiple matches, refresh lightweight match data for all inputs first, then
 keep processing WIP at one match. Finish, upload, verify, and clean the first
@@ -150,13 +199,38 @@ Treat signal candidates only as hints.
 Check candidate boundaries for intermittent score/stat overlays; inspect 10-20 seconds on both sides before accepting a cut.
 Render 1080p only after the reviewed proxy passes visual inspection.
 
-### 3. Remake events and player reels
+### 3. Locate, reconcile, and review events before player reels
 
 Use `$basketball-player-clips` when labeled old event clips exist.
-Default to assists `front15/back0` and other actions `front15/back3`.
-Keep old clips unchanged.
-Review the highest visual-hash-distance rows in `reports/matches.csv` and all source-overlapping events.
-Require one valid player reel per player in `reports/players.csv`.
+Keep old clips unchanged. Platform clips are references, never the delivery
+source; cover the matched reference clip by default instead of assuming its
+action occurs at a fixed `+7s` offset.
+
+The event-direct path is fail-closed in this order:
+
+1. Write `reports/event-location-audit.json`. Block the whole batch when any
+   row moves more than 30 seconds from its raw best match or the monotonic
+   result is more than 128 Hamming bits worse. Switch to reviewed platform
+   references or correct anchors; never waive the row because sequence order
+   looks plausible.
+2. Write `reports/event-stat-audit.json` and exactly reconcile all five action
+   counts per player with official normalized totals. Missing, extra, unknown,
+   or ambiguous player events block rendering.
+3. Render with enough post-reference coverage to show the finish, then write
+   fingerprint-bound `reports/action-evidence.json`. Inspect every made-basket
+   frame for scorer identity and separately confirm period/game clock.
+4. Only after all three reports pass may `identity_approved` and
+   `clock_approved` be set. Require one valid player reel per player in
+   `reports/players.csv`.
+
+`--event-source platform` is a recovery/reference path, not an audit bypass.
+If it cannot produce the same three complete reports, standard delivery must
+remain blocked and must not upload; resume only after reviewed locations are
+fed back through the audited renderer.
+
+Sparse reel contact sheets, filename labels, chronological order, full decode,
+and Baidu byte readback are supporting checks only; none proves that the player
+in the picture made the labeled basket.
 
 ### 4. Build team reels
 
@@ -187,6 +261,9 @@ Require all of the following:
 - Pure-cut contact sheet contains no warmup, long dead air, or score/stat holding page.
 - Final pure-cut seam evidence and compact seam video contain no visible cut jump, duplicate/blank frame, or broken immediate continuation.
 - Local player reel count matches `players.csv`.
+- Player location and official-stat audits are `complete` with no blockers or errors.
+- Every scoring row has a present action-evidence frame bound to the exact reviewed matches CSV.
+- Human review explicitly approved both player identity and game clock after checking all scoring frames.
 - Each team plan contains only that team, includes its expected players, and has no source-overlapping duplicate possessions.
 - The game reel represents both teams, covers decisive late-game events when present, stays within its configured duration bounds, and has no duplicate possession clusters.
 - The final viewer-facing game reel is exactly 1920×1080, regardless of whether
@@ -233,6 +310,21 @@ Each `--attachment` is uploaded explicitly to the match root.
 It uploads `.mp4` files explicitly instead of recursively, so hidden files cannot leak into the cloud.
 It maps local names to collision-free Baidu-compatible names without changing local files.
 It rejects known CLI failure output even when the CLI exits with status 0, then verifies every remote path and exact byte count.
+Remote verification runs one file at a time and retries metadata lookup for
+eventual index consistency. A rerun reuses items already marked `verified` with
+the same remote path and byte count. Exhausted verification reports
+`needs_attention` with `phase=remote_verification`; it does not permit automatic
+shutdown.
+
+After representative runs, build the performance acceptance report with:
+
+```bash
+python3 "$SKILL_DIR/scripts/build_performance_acceptance.py" \
+  --run-dir runs/<event-rich-single> \
+  --run-dir runs/<event-rich-large> \
+  --run-dir runs/<sparse-or-multisegment> \
+  --out output/delivery/performance-acceptance.json
+```
 
 Do not delete or overwrite remote files unless the user explicitly authorizes that action.
 Use `--policy skip` by default; use `rsync` or `overwrite` only when requested.

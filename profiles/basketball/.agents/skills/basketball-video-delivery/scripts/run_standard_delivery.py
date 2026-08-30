@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import shlex
@@ -26,7 +27,7 @@ RENDER_LABELS = SKILL_DIR / "scripts" / "render_game_highlight_labels.py"
 FINAL_VISUAL_AUDIT = SKILL_DIR / "scripts" / "build_final_visual_audit.py"
 PURE_EDITOR = SKILLS_DIR / "basketball-pure-cut" / "scripts" / "pure_cut_editor.py"
 MATCH_REVIEW = SKILLS_DIR / "xiaoqiumi-match-review" / "scripts"
-PLAYER_SKILL = Path.home() / ".codex" / "skills" / "basketball-player-clips"
+PLAYER_SKILL = SKILLS_DIR / "basketball-player-clips"
 MAKE_REEL = PLAYER_SKILL / "scripts" / "make_condensed_reel.py"
 
 
@@ -86,6 +87,42 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def content_fingerprint(path: Path) -> dict[str, Any]:
+    path = path.resolve()
+    size = path.stat().st_size
+    digest = hashlib.sha256()
+    digest.update(str(size).encode("ascii"))
+    with path.open("rb") as handle:
+        if size <= 3 * 1024 * 1024:
+            digest.update(handle.read())
+            mode = "full"
+        else:
+            mode = "sampled-head-middle-tail"
+            for offset in (0, max(0, size // 2 - 512 * 1024), max(0, size - 1024 * 1024)):
+                handle.seek(offset)
+                digest.update(handle.read(1024 * 1024))
+    return {"path": str(path), "bytes": size, "mode": mode, "sha256": digest.hexdigest()}
+
+
+def artifact_is_current(output: Path, inputs: list[Path], cache: Path) -> bool:
+    if not output.is_file() or not cache.is_file() or ffprobe(output) is None:
+        return False
+    try:
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    expected = {str(path.resolve()): content_fingerprint(path) for path in inputs if path.is_file()}
+    return len(expected) == len(inputs) and payload.get("inputs") == expected
+
+
+def record_artifact_cache(output: Path, inputs: list[Path], cache: Path) -> None:
+    write_json(cache, {
+        "version": 1,
+        "output": content_fingerprint(output),
+        "inputs": {str(path.resolve()): content_fingerprint(path) for path in inputs},
+    })
+
+
 def run(name: str, command: list[str], log: Path) -> dict[str, Any]:
     started = time.monotonic()
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +164,19 @@ def csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def parse_delivery_seconds(value: str) -> float:
+    parts = value.strip().split(":")
+    if len(parts) == 1:
+        return float(parts[0])
+    if len(parts) == 2:
+        minutes, seconds = parts
+        return float(minutes) * 60 + float(seconds)
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+        return float(hours) * 3600 + float(minutes) * 60 + float(seconds)
+    raise ValueError(f"invalid time value: {value}")
+
+
 def find_source(fast_report: dict[str, Any], run_dir: Path) -> Path:
     reported = Path(str(fast_report.get("source") or ""))
     if reported.is_file():
@@ -149,6 +199,7 @@ def ensure_tools() -> None:
             FINAL_VISUAL_AUDIT,
             PURE_EDITOR, MAKE_REEL,
             MATCH_REVIEW / "generate_xiaoqiumi_commentary.py",
+            MATCH_REVIEW / "audit_xiaoqiumi_commentary.py",
             MATCH_REVIEW / "render_xiaoqiumi_longform.py",
         )
         if not path.is_file()
@@ -232,6 +283,7 @@ def prepare_review(
     logs: Path,
 ) -> dict[str, Any]:
     output = run_dir / "output"
+    cache_dir = output / "delivery" / "cache"
     pure = output / "pure-cut"
     player = output / "player-clips-front15"
     game = output / "game-highlight"
@@ -249,7 +301,9 @@ def prepare_review(
     pure_proxy = pure / "input_pure_480p.mp4"
     pure_proxy_report = pure / "reports" / "input_pure_480p_report.json"
     pure_contact = pure / "debug" / "input_pure_480p_contact_sheet.jpg"
-    if ffprobe(pure_proxy) is None or pure_proxy.stat().st_mtime < proposed_delete.stat().st_mtime:
+    pure_proxy_inputs = [pure / "proxy" / "input_480p_proxy.mp4", proposed_delete]
+    pure_proxy_cache = cache_dir / "pure-review-proxy.json"
+    if not artifact_is_current(pure_proxy, pure_proxy_inputs, pure_proxy_cache):
         stages.append(run(
             "render_pure_review_proxy",
             [
@@ -260,6 +314,7 @@ def prepare_review(
             logs / "render-pure-review-proxy.log",
         ))
         render_contact_sheet(pure_proxy, pure_contact)
+        record_artifact_cache(pure_proxy, pure_proxy_inputs, pure_proxy_cache)
 
     source_matches = first_existing([
         player / "reports" / "rendered-matches.csv",
@@ -271,8 +326,17 @@ def prepare_review(
     source_fields = set(csv_rows(source_matches)[0])
     if {"new_duration", "avg_hamming"} <= source_fields:
         game_matches.parent.mkdir(parents=True, exist_ok=True)
-        if not game_matches.is_file() or game_matches.stat().st_mtime < source_matches.stat().st_mtime:
+        game_matches_cache = cache_dir / "game-matches.json"
+        expected_source = content_fingerprint(source_matches)
+        cached_source = {}
+        if game_matches_cache.is_file():
+            try:
+                cached_source = json.loads(game_matches_cache.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                cached_source = {}
+        if not game_matches.is_file() or cached_source.get("source") != expected_source:
             shutil.copy2(source_matches, game_matches)
+            write_json(game_matches_cache, {"source": expected_source})
     else:
         stages.append(run(
             "prepare_game_highlight_matches",
@@ -283,7 +347,13 @@ def prepare_review(
     game_draft = game / "比赛精彩集锦_精选8-10分钟.mp4"
     game_selection = game / "比赛精彩集锦_精选8-10分钟_selection.csv"
     game_contact = game / "比赛精彩集锦_精选8-10分钟_contact_sheet.jpg"
-    if ffprobe(game_draft) is None or not game_selection.is_file() or not game_contact.is_file():
+    game_draft_inputs = [game_matches]
+    game_draft_cache = cache_dir / "game-draft.json"
+    if (
+        not artifact_is_current(game_draft, game_draft_inputs, game_draft_cache)
+        or not game_selection.is_file()
+        or not game_contact.is_file()
+    ):
         stages.append(run(
             "build_game_highlight_draft",
             [
@@ -295,12 +365,11 @@ def prepare_review(
             ],
             logs / "build-game-highlight-draft.log",
         ))
+        record_artifact_cache(game_draft, game_draft_inputs, game_draft_cache)
     labeled_game = game / "比赛精彩集锦_精选8-10分钟_数据标注版.mp4"
-    if (
-        ffprobe(labeled_game) is None
-        or labeled_game.stat().st_mtime < game_selection.stat().st_mtime
-        or labeled_game.stat().st_mtime < match_json.stat().st_mtime
-    ):
+    labeled_inputs = [game_matches, game_selection, match_json]
+    labeled_cache = cache_dir / "labeled-game-review.json"
+    if not artifact_is_current(labeled_game, labeled_inputs, labeled_cache):
         stages.append(run(
             "render_game_highlight_labels",
             [
@@ -313,6 +382,7 @@ def prepare_review(
         upscale_stage = ensure_1080p(labeled_game, logs / "upscale-game-highlight-1080p.log")
         if upscale_stage:
             stages.append(upscale_stage)
+        record_artifact_cache(labeled_game, labeled_inputs, labeled_cache)
     labeled_contact = game / "比赛精彩集锦_精选8-10分钟_数据标注版_contact_sheet.jpg"
     if (
         not labeled_contact.is_file()
@@ -342,6 +412,7 @@ def prepare_review(
             sys.executable, str(MATCH_REVIEW / "render_xiaoqiumi_longform.py"),
             str(match_json), "--article-md", str(commentary), "--photo", str(selected_photo),
             "--out-dir", str(poster), "--embed-assets",
+            "--audit-report", str(poster / f"{run_dir.name}_球评审校.json"),
         ],
         logs / "render-commentary-html.log",
     ))
@@ -377,9 +448,15 @@ def prepare_review(
         "player_clips": {
             "approved": False,
             "exceptions_reviewed": False,
+            "identity_approved": False,
+            "clock_approved": False,
             "matches_csv": str(source_matches.resolve()),
             "players_csv": str((player / "reports" / "players.csv").resolve()),
+            "location_audit": str((player / "reports" / "event-location-audit.json").resolve()),
+            "stat_audit": str((player / "reports" / "event-stat-audit.json").resolve()),
+            "action_evidence": str((player / "reports" / "action-evidence.json").resolve()),
             "review_high_distance_and_overlaps": True,
+            "review_every_scoring_action_frame": True,
         },
         "game_highlight": {
             "approved": False,
@@ -398,6 +475,7 @@ def prepare_review(
             "html": str(html.resolve()),
             "png": str(png.resolve()),
             "photo": str(selected_photo.resolve()),
+            "audit_report": str((poster / f"{run_dir.name}_球评审校.json").resolve()),
             "requirements": [
                 "attempts before makes in prose",
                 "at least 600 Chinese characters and 4 review sections",
@@ -423,6 +501,10 @@ def require_approved(review: dict[str, Any]) -> None:
         errors.append("pure_cut.visual_approved is not true")
     if not review.get("player_clips", {}).get("exceptions_reviewed"):
         errors.append("player_clips.exceptions_reviewed is not true")
+    if not review.get("player_clips", {}).get("identity_approved"):
+        errors.append("player_clips.identity_approved is not true")
+    if not review.get("player_clips", {}).get("clock_approved"):
+        errors.append("player_clips.clock_approved is not true")
     if not review.get("game_highlight", {}).get("visual_approved"):
         errors.append("game_highlight.visual_approved is not true")
     commentary = review.get("commentary", {})
@@ -435,6 +517,9 @@ def require_approved(review: dict[str, Any]) -> None:
         "pure proxy_video": review.get("pure_cut", {}).get("proxy_video"),
         "pure contact_sheet": review.get("pure_cut", {}).get("contact_sheet"),
         "player matches_csv": review.get("player_clips", {}).get("matches_csv"),
+        "player location_audit": review.get("player_clips", {}).get("location_audit"),
+        "player stat_audit": review.get("player_clips", {}).get("stat_audit"),
+        "player action_evidence": review.get("player_clips", {}).get("action_evidence"),
         "game selection_csv": review.get("game_highlight", {}).get("selection_csv"),
         "game draft_video": review.get("game_highlight", {}).get("draft_video"),
         "game contact_sheet": review.get("game_highlight", {}).get("contact_sheet"),
@@ -442,6 +527,7 @@ def require_approved(review: dict[str, Any]) -> None:
         "commentary html": commentary.get("html"),
         "commentary png": commentary.get("png"),
         "commentary photo": commentary.get("photo"),
+        "commentary audit_report": commentary.get("audit_report"),
     }
     for label, raw_path in required_paths.items():
         if not raw_path or not Path(raw_path).is_file():
@@ -457,8 +543,8 @@ def validate_review_artifacts(review: dict[str, Any]) -> None:
     previous_end = -1.0
     for index, row in enumerate(delete_rows, start=2):
         try:
-            start = float(row["start"])
-            end = float(row["end"])
+            start = parse_delivery_seconds(row["start"])
+            end = parse_delivery_seconds(row["end"])
         except (KeyError, TypeError, ValueError):
             errors.append(f"invalid pure-cut row {index}")
             continue
@@ -471,6 +557,28 @@ def validate_review_artifacts(review: dict[str, Any]) -> None:
     player_rows = csv_rows(Path(review["player_clips"]["matches_csv"]))
     if not player_rows:
         errors.append("player match review is empty")
+    for audit_key in ("location_audit", "stat_audit"):
+        audit_path = Path(review["player_clips"][audit_key])
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        if audit.get("status") != "complete" or audit.get("blockers") or audit.get("errors"):
+            errors.append(f"player {audit_key} did not pass: {audit_path}")
+    evidence_path = Path(review["player_clips"]["action_evidence"])
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    scoring_rows = [row for row in player_rows if row.get("action") in {"2分命中", "3分命中"}]
+    if evidence.get("status") != "complete":
+        errors.append(f"player action evidence did not complete: {evidence_path}")
+    if evidence.get("scoring_event_count") != len(scoring_rows):
+        errors.append("player action evidence count does not match scoring rows")
+    evidence_items = evidence.get("items") or []
+    if len(evidence_items) != len(scoring_rows):
+        errors.append("player action evidence frame count does not match scoring rows")
+    for item in evidence_items:
+        frame = Path(str(item.get("evidence_frame") or ""))
+        if not frame.is_file() or frame.stat().st_size <= 0:
+            errors.append(f"missing player action evidence frame: {frame}")
+    reviewed_matches = Path(review["player_clips"]["matches_csv"])
+    if evidence.get("matches_csv_sha256") != hashlib.sha256(reviewed_matches.read_bytes()).hexdigest():
+        errors.append("player action evidence is stale for the reviewed matches CSV")
 
     selection_rows = csv_rows(Path(review["game_highlight"]["selection_csv"]))
     teams = {row.get("team", "").strip() for row in selection_rows if row.get("team", "").strip()}
@@ -556,10 +664,17 @@ def manifest_is_current(manifest: Path, required_inputs: list[Path]) -> bool:
         return False
     if payload.get("full_decode", {}).get("status") != "complete":
         return False
-    return all(
-        path.is_file() and manifest.stat().st_mtime_ns >= path.stat().st_mtime_ns
-        for path in required_inputs
-    )
+    expected = {str(path.resolve()): content_fingerprint(path) for path in required_inputs if path.is_file()}
+    return len(expected) == len(required_inputs) and payload.get("cache_inputs") == expected
+
+
+def record_manifest_inputs(manifest: Path, required_inputs: list[Path]) -> None:
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["cache_version"] = 1
+    payload["cache_inputs"] = {
+        str(path.resolve()): content_fingerprint(path) for path in required_inputs
+    }
+    write_json(manifest, payload)
 
 
 def final_visual_review_is_approved(contract: dict[str, Any]) -> bool:
@@ -574,6 +689,21 @@ def final_visual_review_is_approved(contract: dict[str, Any]) -> bool:
     )
 
 
+def cleanup_regenerable_event_clips(output: Path) -> dict[str, Any]:
+    event_dir = output / "player-clips-front15" / "个人精彩片段"
+    clips = sorted(path for path in event_dir.glob("*.mp4") if path.is_file())
+    reclaimed = sum(path.stat().st_size for path in clips)
+    for path in clips:
+        path.unlink()
+    return {
+        "name": "cleanup_regenerable_event_clips",
+        "status": "complete",
+        "removed_count": len(clips),
+        "reclaimed_bytes": reclaimed,
+        "recoverable_from": str((output / "player-clips-front15" / "reports" / "rendered-matches.csv").resolve()),
+    }
+
+
 def finish_delivery(
     run_dir: Path,
     source: Path,
@@ -585,14 +715,13 @@ def finish_delivery(
     logs: Path,
 ) -> list[dict[str, Any]]:
     output = run_dir / "output"
+    cache_dir = output / "delivery" / "cache"
     stages: list[dict[str, Any]] = []
     delete_csv = Path(review["pure_cut"]["reviewed_delete_csv"])
     pure_final = output / "pure-cut" / "比赛_纯享版_1080p.mp4"
-    if (
-        ffprobe(pure_final) is None
-        or pure_final.stat().st_mtime < delete_csv.stat().st_mtime
-        or pure_final.stat().st_mtime < source.stat().st_mtime
-    ):
+    pure_final_inputs = [source, delete_csv]
+    pure_final_cache = cache_dir / "pure-final.json"
+    if not artifact_is_current(pure_final, pure_final_inputs, pure_final_cache):
         stages.append(run(
             "render_pure_1080p",
             [
@@ -612,14 +741,17 @@ def finish_delivery(
     )
     if pure_upscale:
         stages.append(pure_upscale)
+    record_artifact_cache(pure_final, pure_final_inputs, pure_final_cache)
 
     game = output / "game-highlight"
     labeled_game = game / "比赛精彩集锦_精选8-10分钟_数据标注版.mp4"
-    if (
-        ffprobe(labeled_game) is None
-        or labeled_game.stat().st_mtime < Path(review["game_highlight"]["selection_csv"]).stat().st_mtime
-        or labeled_game.stat().st_mtime < match_json.stat().st_mtime
-    ):
+    final_labeled_inputs = [
+        Path(review["game_highlight"]["matches_csv"]),
+        Path(review["game_highlight"]["selection_csv"]),
+        match_json,
+    ]
+    final_labeled_cache = cache_dir / "labeled-game-final.json"
+    if not artifact_is_current(labeled_game, final_labeled_inputs, final_labeled_cache):
         stages.append(run(
             "render_game_highlight_labels",
             [
@@ -633,16 +765,19 @@ def finish_delivery(
         upscale_stage = ensure_1080p(labeled_game, logs / "upscale-game-highlight-1080p.log")
         if upscale_stage:
             stages.append(upscale_stage)
+    record_artifact_cache(labeled_game, final_labeled_inputs, final_labeled_cache)
 
     commentary = review["commentary"]
     poster_dir = output / "球评海报"
     html = poster_dir / f"{run_dir.name}_球评海报.html"
     png = html.with_suffix(".png")
+    audit_report = poster_dir / f"{run_dir.name}_球评审校.json"
     article_path = Path(commentary["article_md"])
     photo_path = Path(commentary["photo"])
     if (
         not html.is_file()
         or not png.is_file()
+        or not audit_report.is_file()
         or html.stat().st_mtime < article_path.stat().st_mtime
         or html.stat().st_mtime < photo_path.stat().st_mtime
     ):
@@ -652,6 +787,7 @@ def finish_delivery(
                 sys.executable, str(MATCH_REVIEW / "render_xiaoqiumi_longform.py"),
                 str(match_json), "--article-md", str(article_path),
                 "--photo", str(photo_path), "--out-dir", str(poster_dir), "--embed-assets",
+                "--audit-report", str(audit_report),
             ],
             logs / "render-final-commentary-html.log",
         ))
@@ -669,7 +805,7 @@ def finish_delivery(
         if path.is_file() and not path.name.startswith(".")
     )
     validation_inputs = [
-        pure_final, labeled_game, article_path, html, png, *player_reels,
+        pure_final, labeled_game, article_path, html, png, audit_report, *player_reels,
     ]
     if manifest_is_current(manifest, validation_inputs):
         stages.append({
@@ -686,6 +822,7 @@ def finish_delivery(
             ],
             logs / "validate-standard-delivery.log",
         ))
+        record_manifest_inputs(manifest, validation_inputs)
     if json.loads(manifest.read_text(encoding="utf-8")).get("status") != "complete":
         raise RuntimeError(f"standard package gate failed: {manifest}")
 
@@ -730,6 +867,7 @@ def finish_delivery(
         ))
     elif execute_upload:
         raise ValueError("--execute-upload requires --target")
+    stages.append(cleanup_regenerable_event_clips(output))
     return stages
 
 
@@ -870,7 +1008,7 @@ def main() -> int:
         download = fast_failure.get("download") or {}
         payload.update({
             "status": "needs_attention",
-            "phase": "replay_download",
+            "phase": fast_failure.get("phase") or "replay_download",
             "reason": str(exc),
             "fast_start_report": str(exc.report.resolve()),
             "download_report": fast_failure.get("download_report"),
@@ -884,6 +1022,16 @@ def main() -> int:
             "max_attempts": download.get("max_attempts"),
             "chunks_preserved": download.get("chunks_preserved", True),
             "action_required": fast_failure.get("action_required"),
+            "fast_start_details": {
+                key: fast_failure.get(key)
+                for key in (
+                    "event_source", "event_metadata_count", "event_download_count",
+                    "replay_segment_count", "replay_selection", "assembled_source",
+                    "standard_package_blocked", "sparse_event_policy", "fallback_options",
+                    "disk",
+                )
+                if fast_failure.get(key) is not None
+            },
             "resume_command": shlex.join([
                 sys.executable, str(Path(__file__).resolve()), args.match,
                 "--workspace", str(workspace),

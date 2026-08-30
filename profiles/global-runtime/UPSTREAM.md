@@ -12,10 +12,7 @@
 | `technical-html-deck` | `profiles/ppt/.agents/skills/technical-html-deck` | `follow`：正式 profile 验证通过后完整同步。 |
 | `drawio-skill` | `profiles/ppt/.agents/skills/drawio-skill`，上游 `Agents365-ai/drawio-skill` | `follow-after-review`：只作为 `technical-html-deck` 的可编辑技术图 renderer；保持显式触发和本地窄 wrapper。 |
 | `fireworks-tech-graph` | `profiles/ppt/.agents/skills/fireworks-tech-graph`，上游 `yizhiyanhua-ai/fireworks-tech-graph` | `follow-after-review`：只作为 `technical-html-deck` 的语义 SVG renderer；保持显式触发和本地窄 wrapper。 |
-| 与 `profiles/mattpocock-skills` 同名且未列入例外的 skill | `profiles/mattpocock-skills/.agents/skills/<name>` | `follow-after-review`：来源 profile 更新后逐项看 diff，再同步到运行态；禁止整个目录盲目覆盖。 |
-| `ask-matt` | `profiles/mattpocock-skills/.agents/skills/ask-matt` | `local-fork`：保留当前窄路由；上游新增的 phase/subagent 编排和隐式 `wizard` 路由只做人工 diff，不自动同步。 |
-| `grilling` | `profiles/mattpocock-skills/.agents/skills/grilling` | `local-fork`：保留一次一个问题的交互，避免一次抛出整轮 frontier 问题；上游只做人工 diff。 |
-| `wizard` | `profiles/mattpocock-skills/.agents/skills/wizard` | `local-fork`：保持 `disable-model-invocation: true` 和显式调用门禁；涉及凭证、CI secret、第三方控制台或不可逆操作时必须由用户明确触发。 |
+| `profiles/mattpocock-skills` 中的全部 skill | `profiles/mattpocock-skills/.agents/skills/<name>` | `follow`：来源 profile 完成上游刷新和验证后，将其当前提供的全部 skill 完整同步到运行态；同名目录以来源版本为准，不保留 `ask-matt`、`grilling`、`wizard` 等本地 fork。只同步该来源清单内的目录，不删除其他来源的运行态 skill。 |
 | `grok-research` | `profiles/experimental/.agents/skills/grok-research` | `follow-after-review`：本地自研的 OpenCLI Browser Bridge 研究流程；保持 Grok 显式触发、X/YouTube 窄范围、原始链接核验和浏览器状态护栏，来源版本验证后完整同步。 |
 | `obsidian-vault` | Local maintained fork of the former `mattpocock/skills` implementation | `local-fork`：上游已移除同名 skill；本地版本继续负责真实 vault 路径、结构保护和 Codex-Memory 规则，不随来源 profile 删除。 |
 | `codemao-troubleshoot` | `profiles/codemao/.agents/skills/codemao-troubleshoot` | `local-fork`：业务逻辑继续人工跟随公司来源；运行态 `package-lock.json` 将间接依赖 `ip-address` 锁定到 `10.4.0`，修复已知 SSRF/地址分类绕过风险，上游刷新不得降级该安全修复。 |
@@ -33,8 +30,17 @@
 
 以下运行态 skill 当前没有可确认的同名 canonical profile，升级前必须先补齐来源：
 
-- `agently-mail`
-- `notebooklm`
+- `agent-browser`
+- `grok-search`（目录名为 `grok_skill`）
+- `xhs-ops-skill`
+- `agently-mail`（在 `profiles/experimental` 有同名候选副本，但未记录外部来源）
+- `notebooklm`（在 `profiles/experimental` 有同名候选副本，但未记录外部来源）
+
+这些条目在补齐来源、完成一次可复现 case/run 并明确触发范围前，保持仅显式调用；不得作为其它 profile 的同步来源。
+
+## Pending reconciliation
+
+- `market-live-report-skill` 的运行态副本与 `profiles/codemao` 副本内容不一致。公司 profile 是 canonical source；下一次同步前必须人工审查该差异并决定保留为受控本地覆盖，或完整跟随来源。未完成前不得将任一副本视为另一副本的自动升级基线。
 
 `to-issues` 和 `to-prd` 已随 `mattpocock-skills` 的来源删除从运行态移除。
 如上游以后重新提供同名 skill，按 `follow-after-review` 重新评估，不自动恢复。
@@ -43,7 +49,7 @@
 它们位于 matt 上游的 deprecated 分组；如需恢复到运行态，必须重新说明使用场景并人工评估。
 
 `profiles/mattpocock-skills` 当前基于 upstream commit `84fdeffd12f2ee307994d1eb6feb48173b6e0502`。
-2026-08-08 审查后，除 `ask-matt`、`grilling`、`wizard` 和 `obsidian-vault` 本地 fork 外，运行态中已存在且仍由 matt source 提供的同名 skill 已同步到该来源。上游新增的 `wait-what`、`writing-for-agents` 尚未晋级全局；上游已移除且没有本地 fork 的 `batch-grill-me`、`edit-article`、`writing-great-skills` 已从运行态移除。
+2026-08-12 按用户确认改为完整跟随：来源 profile 当前提供的 35 个 skill 已全部同步到运行态；`ask-matt`、`grilling`、`wizard` 不再保留本地 fork，`wait-what`、`writing-for-agents` 已晋级全局。上游已移除且没有本地 fork 的 `batch-grill-me`、`edit-article`、`writing-great-skills` 继续不在运行态。`obsidian-vault` 是上游已移除后的本地维护 skill，不属于当前 Matt 来源清单，继续按其独立 `local-fork` 策略保留。
 
 如果一个运行态 skill 不属于上述来源族，先通过 Git 历史和真实来源补充记录，再执行升级。
 

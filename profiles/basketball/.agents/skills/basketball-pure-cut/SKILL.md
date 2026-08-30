@@ -160,7 +160,13 @@ Treat the generated CSV as candidate deletion, not ground truth. Basketball sema
 
 ## Progress and Long Runs
 
-Full-resolution rendering may be slow because the script re-encodes every kept range for accurate cuts, then concatenates them. This is expected. If there is no visible output file yet, check for active per-segment ffmpeg work instead of assuming it is stuck:
+Default full-resolution rendering uses one ffmpeg filter graph and an atomic
+partial output. It does not retain one encoded temporary file per keep range.
+The JSON report records `render.strategy=single_pass_filter`,
+`temporary_segment_count=0`, and the partial-output byte count. `--copy-codecs`
+remains a smoke-test fallback and still uses temporary segments because accurate
+stream-copy concatenation requires them. If there is no visible final file yet,
+check for the active ffmpeg process and hidden atomic partial output:
 
 ```bash
 ps -axo pid,etime,pcpu,pmem,command | rg 'pure_cut_editor.py|ffmpeg' | rg -v 'rg'

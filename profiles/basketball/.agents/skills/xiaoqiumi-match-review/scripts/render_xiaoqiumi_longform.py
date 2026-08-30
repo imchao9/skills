@@ -14,6 +14,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from audit_xiaoqiumi_commentary import audit_article, display_periods
 
 TEAM_COLORS = {
     "松岗先锋队": ("#f4c94d", "#2468dc", "#ef3d4a"),
@@ -139,9 +140,10 @@ def render(data: dict[str, Any], article_md: str, photo_url: str) -> str:
     round_number = int(round_match.group()) if round_match else 0
     round_label = f"{round_number:02d}" if round_number else "—"
     primary, secondary, opponent = TEAM_COLORS.get(winner["name"], ("#f4c94d", "#2468dc", "#ef3d4a"))
+    shown_periods = display_periods(data)
     periods = []
-    for index, period in enumerate(data.get("periods", []), start=1):
-        label = f"第{index}节" if index <= 4 else f"附加节{index - 4}"
+    for index, period in enumerate(shown_periods, start=1):
+        label = f"第{index}节" if index <= 4 else f"加时{index - 4}"
         periods.append(f"<div class='period'><span>{esc(label)}</span><strong>{esc(period['home'])}:{esc(period['away'])}</strong></div>")
 
     metrics = "".join(
@@ -149,7 +151,12 @@ def render(data: dict[str, Any], article_md: str, photo_url: str) -> str:
             metric_row("篮板", home_stats.get("totalBoards"), away_stats.get("totalBoards"), home["name"], away["name"]),
             metric_row("投篮命中率", shooting_rate(home_stats), shooting_rate(away_stats), home["name"], away["name"]),
             metric_row("抢断", home_stats.get("steals"), away_stats.get("steals"), home["name"], away["name"]),
-            metric_row("失误", home_stats.get("error"), away_stats.get("error"), home["name"], away["name"]),
+            metric_row(
+                "失误" if int(home_stats.get("error") or 0) + int(away_stats.get("error") or 0) else "助攻",
+                home_stats.get("error") if int(home_stats.get("error") or 0) + int(away_stats.get("error") or 0) else home_stats.get("assists"),
+                away_stats.get("error") if int(home_stats.get("error") or 0) + int(away_stats.get("error") or 0) else away_stats.get("assists"),
+                home["name"], away["name"],
+            ),
         ]
     )
     supporting = "".join(
@@ -157,10 +164,24 @@ def render(data: dict[str, Any], article_md: str, photo_url: str) -> str:
         for player in leaders[1:]
     )
     rebound_margin = int(winner_stats.get("totalBoards") or 0) - int(loser_stats.get("totalBoards") or 0)
-    if rebound_margin >= 8:
+    final_margin = int(winner["score"]) - int(loser["score"])
+    winner_key, loser_key = ("home", "away") if winner_side == "home" else ("away", "home")
+    second_half_wins = [
+        int(period[winner_key]) > int(period[loser_key])
+        for period in shown_periods[2:4]
+    ]
+    fourth_margin = (
+        int(shown_periods[3][winner_key]) - int(shown_periods[3][loser_key])
+        if len(shown_periods) >= 4 else 0
+    )
+    if final_margin <= 3 and fourth_margin > 0:
+        story = f"{winner['name']}末节多拿{fourth_margin}分，以{winner['score']}:{loser['score']}险胜{loser['name']}。"
+    elif len(second_half_wins) == 2 and all(second_half_wins):
+        story = f"{winner['name']}下半场连续两节占优，以{winner['score']}:{loser['score']}战胜{loser['name']}。"
+    elif rebound_margin >= 8:
         story = f"{winner['name']}抢下{winner_stats.get('totalBoards', 0)}个篮板，以{winner['score']}:{loser['score']}赢下回合争夺。"
     else:
-        story = f"{winner['name']}用更稳定的终结效率建立领先，以{winner['score']}:{loser['score']}把胜果保持到最后。"
+        story = f"{winner['name']}以{winner['score']}:{loser['score']}赢下比赛，具体胜负原因以审校后的正文为准。"
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -214,7 +235,7 @@ html, body {{ margin:0; background:#111318; font-family:-apple-system,BlinkMacSy
 .bar {{ height:28px; display:flex; align-items:center; padding:0 12px; min-width:70px; font-size:14px; font-weight:850; white-space:nowrap; }}
 .bar-home {{ background:linear-gradient(90deg,var(--opponent),color-mix(in srgb,var(--opponent) 45%,transparent)); }}
 .bar-away {{ background:linear-gradient(90deg,var(--secondary),var(--primary)); color:#0a0d14; }}
-.periods {{ display:grid; grid-template-columns:repeat(5,1fr); gap:3px; margin-top:40px; border-top:1px solid rgba(255,255,255,.18); padding-top:24px; }}
+.periods {{ display:grid; grid-template-columns:repeat({max(len(periods), 1)},1fr); gap:3px; margin-top:40px; border-top:1px solid rgba(255,255,255,.18); padding-top:24px; }}
 .period {{ padding:18px 12px; text-align:center; background:rgba(255,255,255,.06); }}
 .period span {{ display:block; font-size:16px; color:rgba(255,255,255,.58); }}
 .period strong {{ display:block; margin-top:7px; font-size:26px; }}
@@ -250,12 +271,12 @@ html, body {{ margin:0; background:#111318; font-family:-apple-system,BlinkMacSy
   <section class="insight">
     <div class="section-label">PLAYER IMPACT / 关键球员</div>
     <div class="insight-grid">
-      <div class="mvp"><div class="mvp-tag">GAME MVP · 全场焦点</div><div class="mvp-name">{esc(player_label(mvp))}</div><div class="mvp-score">{esc(mvp.get('score', 0))}<small>分</small></div><div class="mvp-line">{esc(mvp.get('totalBoards', 0))} 篮板 · {esc(mvp.get('assists', 0))} 助攻 · {esc(mvp.get('steals', 0))} 抢断</div></div>
+      <div class="mvp"><div class="mvp-tag">WINNING CORE · 胜方核心</div><div class="mvp-name">{esc(player_label(mvp))}</div><div class="mvp-score">{esc(mvp.get('score', 0))}<small>分</small></div><div class="mvp-line">{esc(mvp.get('totalBoards', 0))} 篮板 · {esc(mvp.get('assists', 0))} 助攻 · {esc(mvp.get('steals', 0))} 抢断</div></div>
       <div class="support"><div class="support-title">胜方主要贡献</div>{supporting}</div>
     </div>
   </section>
   <section class="data-zone">
-    <div class="data-head"><div><div class="section-label">MATCH DATA / 比赛拆解</div><h2>胜负藏在回合与效率里</h2></div><p>数据条按主队、客队顺序呈现。第五个计分段沿用接口记录，但不据此推断为常规加时。</p></div>
+    <div class="data-head"><div><div class="section-label">MATCH DATA / 比赛拆解</div><h2>胜负藏在回合与效率里</h2></div><p>数据条按主队、客队顺序呈现。有效计分段已与终场比分核对，额外占位记录不展示。</p></div>
     {metrics}
     <div class="periods">{''.join(periods)}</div>
   </section>
@@ -276,6 +297,7 @@ def main() -> int:
     parser.add_argument("--article-md", type=Path, required=True)
     parser.add_argument("--photo", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--audit-report", type=Path)
     parser.add_argument(
         "--embed-assets",
         action="store_true",
@@ -286,6 +308,12 @@ def main() -> int:
     data = json.loads(args.json_path.read_text(encoding="utf-8"))
     article_md = args.article_md.read_text(encoding="utf-8")
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    audit = audit_article(data, article_md)
+    audit_path = args.audit_report or args.out_dir / f"{data['match']['matchID']}_球评审校.json"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if audit["errors"]:
+        raise SystemExit("Commentary fact audit failed: " + "; ".join(audit["errors"]))
     photo_url = asset_url(args.photo, args.out_dir, args.embed_assets)
     match = data["match"]
     stem = slug(f"{match['homeTeam']['name']}-{match['homeTeam']['score']}-{match['awayTeam']['score']}-{match['awayTeam']['name']}-完整球评")

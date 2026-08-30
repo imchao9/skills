@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 import tempfile
@@ -18,6 +19,34 @@ SPEC.loader.exec_module(delivery)
 
 
 class RunStandardDeliveryTest(unittest.TestCase):
+    def player_review(self, root: Path, matches_csv: Path) -> dict:
+        location_audit = root / "event-location-audit.json"
+        stat_audit = root / "event-stat-audit.json"
+        evidence = root / "action-evidence.json"
+        location_audit.write_text('{"status":"complete","blockers":[]}', encoding="utf-8")
+        stat_audit.write_text('{"status":"complete","errors":[]}', encoding="utf-8")
+        evidence.write_text(json.dumps({
+            "status": "complete",
+            "matches_csv_sha256": hashlib.sha256(matches_csv.read_bytes()).hexdigest(),
+            "scoring_event_count": 0,
+            "items": [],
+        }), encoding="utf-8")
+        return {
+            "approved": True,
+            "exceptions_reviewed": True,
+            "identity_approved": True,
+            "clock_approved": True,
+            "matches_csv": str(matches_csv),
+            "location_audit": str(location_audit),
+            "stat_audit": str(stat_audit),
+            "action_evidence": str(evidence),
+        }
+
+    def test_parse_delivery_seconds_accepts_editor_csv_formats(self) -> None:
+        self.assertEqual(delivery.parse_delivery_seconds("30.5"), 30.5)
+        self.assertEqual(delivery.parse_delivery_seconds("10:04"), 604.0)
+        self.assertEqual(delivery.parse_delivery_seconds("01:21:55"), 4915.0)
+
     def test_match_id_from_h5_url(self) -> None:
         url = "https://example/#/MatchDetails?competitionID=1&matchid=400359920"
         self.assertEqual(delivery.match_id_from_ref(url), 400359920)
@@ -87,6 +116,8 @@ class RunStandardDeliveryTest(unittest.TestCase):
             html.write_text("<html></html>", encoding="utf-8")
             png = root / "poster.png"
             png.write_bytes(b"png")
+            audit = root / "球评审校.json"
+            audit.write_text('{"status":"passed","errors":[]}', encoding="utf-8")
             review = {
                 "status": "approved",
                 "pure_cut": {
@@ -96,11 +127,7 @@ class RunStandardDeliveryTest(unittest.TestCase):
                     "proxy_video": str(pure_proxy),
                     "contact_sheet": str(pure_contact),
                 },
-                "player_clips": {
-                    "approved": True,
-                    "exceptions_reviewed": True,
-                    "matches_csv": str(matches_csv),
-                },
+                "player_clips": self.player_review(root, matches_csv),
                 "game_highlight": {
                     "approved": True,
                     "visual_approved": True,
@@ -116,6 +143,7 @@ class RunStandardDeliveryTest(unittest.TestCase):
                     "photo": str(photo),
                     "html": str(html),
                     "png": str(png),
+                    "audit_report": str(audit),
                 },
             }
             delivery.require_approved(review)
@@ -153,6 +181,8 @@ class RunStandardDeliveryTest(unittest.TestCase):
             html.write_text("<html></html>", encoding="utf-8")
             png = root / "poster.png"
             png.write_bytes(b"png")
+            audit = root / "球评审校.json"
+            audit.write_text('{"status":"passed","errors":[]}', encoding="utf-8")
             review = {
                 "status": "approved",
                 "pure_cut": {
@@ -162,11 +192,7 @@ class RunStandardDeliveryTest(unittest.TestCase):
                     "proxy_video": str(pure_proxy),
                     "contact_sheet": str(pure_contact),
                 },
-                "player_clips": {
-                    "approved": True,
-                    "exceptions_reviewed": True,
-                    "matches_csv": str(matches_csv),
-                },
+                "player_clips": self.player_review(root, matches_csv),
                 "game_highlight": {
                     "approved": True,
                     "visual_approved": True,
@@ -182,6 +208,7 @@ class RunStandardDeliveryTest(unittest.TestCase):
                     "photo": str(photo),
                     "html": str(html),
                     "png": str(png),
+                    "audit_report": str(audit),
                 },
             }
             with self.assertRaisesRegex(delivery.WaitingForReview, "19中78"):
@@ -203,7 +230,7 @@ class RunStandardDeliveryTest(unittest.TestCase):
     def test_auto_approved_final_visual_review_passes(self) -> None:
         self.assertTrue(delivery.final_visual_review_is_approved({"status": "auto_approved"}))
 
-    def test_manifest_cache_invalidates_when_input_is_newer(self) -> None:
+    def test_manifest_cache_uses_content_not_mtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             artifact = root / "artifact.mp4"
@@ -213,6 +240,9 @@ class RunStandardDeliveryTest(unittest.TestCase):
                 '{"status":"complete","full_decode":{"status":"complete"}}',
                 encoding="utf-8",
             )
+            delivery.record_manifest_inputs(manifest, [artifact])
+            self.assertTrue(delivery.manifest_is_current(manifest, [artifact]))
+            artifact.touch()
             self.assertTrue(delivery.manifest_is_current(manifest, [artifact]))
             artifact.write_bytes(b"new")
             self.assertFalse(delivery.manifest_is_current(manifest, [artifact]))

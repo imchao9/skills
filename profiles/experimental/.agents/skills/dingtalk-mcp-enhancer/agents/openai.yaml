@@ -1,0 +1,6 @@
+interface:
+  display_name: "钉钉 MCP 增强器"
+  short_description: "增强钉钉文档、表格和 AI 表格的读取、写入与诊断"
+  default_prompt: "使用 $dingtalk-mcp-enhancer 处理这个钉钉任务；先按当前 MCP 判断真实能力，再选择只读、创建或写入路线并完成独立验证。"
+policy:
+  allow_implicit_invocation: true

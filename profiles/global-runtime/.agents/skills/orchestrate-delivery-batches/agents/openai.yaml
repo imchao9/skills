@@ -1,0 +1,6 @@
+interface:
+  display_name: "分批交付编排"
+  short_description: "把复杂需求拆成计划、垂直票据、模型批次并持续监督验收"
+  default_prompt: "Use $orchestrate-delivery-batches to plan this complex request, split it into vertical tickets, route models, and supervise delivery."
+policy:
+  allow_implicit_invocation: true

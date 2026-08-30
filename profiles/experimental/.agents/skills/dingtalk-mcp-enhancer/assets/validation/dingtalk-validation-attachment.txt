@@ -1,0 +1,8 @@
+DingTalk MCP validation fixture
+================================
+
+Purpose: verify native attachment upload and read-back paths.
+Content classification: synthetic, non-sensitive.
+Fixture version: 2026-07-31
+
+This file contains no credentials, personal data, private URLs, or business data.

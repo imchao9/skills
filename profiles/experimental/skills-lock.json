@@ -56,6 +56,11 @@
       "skillPath": "skills/ce-compound/SKILL.md",
       "computedHash": "36154e618aead67465916fedbcfbcfaaf1ed10f2240b96ad4c9966d7d749af7d"
     },
+    "dingtalk-mcp-enhancer": {
+      "source": "../../../../../Downloads/dingtalk-mcp-enhancer",
+      "sourceType": "local",
+      "computedHash": "078b76df548f6f192624fad10c1e259323fad0a6793054ba5c6a6f14130f7b3f"
+    },
     "draw-ui": {
       "source": "imchao9/skills",
       "ref": "main",

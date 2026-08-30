@@ -1,0 +1,6 @@
+interface:
+  display_name: "Basketball Player Clips"
+  short_description: "Remake basketball clips and player reels"
+  default_prompt: "Use $basketball-player-clips to remake player clips, per-player reels, and a full-game highlight reel from a basketball replay."
+policy:
+  allow_implicit_invocation: true

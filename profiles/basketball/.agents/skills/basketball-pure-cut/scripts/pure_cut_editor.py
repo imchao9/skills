@@ -181,10 +181,60 @@ def render_keep_ranges(
     copy_codecs: bool,
     encoder_preset: str,
     crf: str,
-) -> None:
+    has_audio: bool,
+) -> dict:
     if output_path.exists() and not force:
         raise SystemExit(f"输出已存在：{output_path}，如需覆盖请加 --force")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    partial_output = output_path.with_name(f".{output_path.stem}.part{output_path.suffix}")
+    partial_output.unlink(missing_ok=True)
+    if not copy_codecs:
+        filters: list[str] = []
+        concat_inputs: list[str] = []
+        for idx, item in enumerate(keep_ranges):
+            filters.append(
+                f"[0:v:0]trim=start={item.start:.3f}:end={item.end:.3f},"
+                f"setpts=PTS-STARTPTS[v{idx}]"
+            )
+            concat_inputs.append(f"[v{idx}]")
+            if has_audio:
+                filters.append(
+                    f"[0:a:0]atrim=start={item.start:.3f}:end={item.end:.3f},"
+                    f"asetpts=PTS-STARTPTS[a{idx}]"
+                )
+                concat_inputs.append(f"[a{idx}]")
+        filters.append(
+            "".join(concat_inputs)
+            + f"concat=n={len(keep_ranges)}:v=1:a={1 if has_audio else 0}"
+            + ("[outv][outa]" if has_audio else "[outv]")
+        )
+        print(f"单进程渲染 {len(keep_ranges)} 个保留片段 -> {output_path}", flush=True)
+        cmd = [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path),
+            "-filter_complex", ";".join(filters), "-map", "[outv]",
+        ]
+        if has_audio:
+            cmd.extend(["-map", "[outa]"])
+        cmd.extend([
+            "-c:v", "libx264", "-preset", encoder_preset, "-crf", crf,
+            *( ["-c:a", "aac"] if has_audio else [] ),
+            "-movflags", "+faststart", str(partial_output),
+        ])
+        try:
+            run(cmd)
+            partial_bytes = partial_output.stat().st_size
+            partial_output.replace(output_path)
+        except BaseException:
+            partial_output.unlink(missing_ok=True)
+            raise
+        return {
+            "strategy": "single_pass_filter",
+            "atomic_output": True,
+            "temporary_segment_count": 0,
+            "intermediate_segment_bytes_peak": 0,
+            "partial_output_bytes": partial_bytes,
+        }
+
     with tempfile.TemporaryDirectory(prefix="pure_cut_") as tmp:
         tmp_dir = Path(tmp)
         clip_paths: list[Path] = []
@@ -255,9 +305,19 @@ def render_keep_ranges(
                 str(concat_file),
                 "-c",
                 "copy",
-                str(output_path),
+                str(partial_output),
             ]
         )
+        intermediate_bytes = sum(path.stat().st_size for path in clip_paths)
+        partial_bytes = partial_output.stat().st_size
+        partial_output.replace(output_path)
+        return {
+            "strategy": "segment_concat_copy",
+            "atomic_output": True,
+            "temporary_segment_count": len(clip_paths),
+            "intermediate_segment_bytes_peak": intermediate_bytes,
+            "partial_output_bytes": partial_bytes,
+        }
 
 
 def write_report(
@@ -270,6 +330,7 @@ def write_report(
     keep_ranges: list[KeepRange],
     input_probe: dict,
     output_probe: dict | None,
+    render_stats: dict | None,
 ) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     deleted = sum(item.end - item.start for item in delete_ranges)
@@ -290,6 +351,7 @@ def write_report(
         ],
         "input_probe": input_probe,
         "output_probe": output_probe,
+        "render": render_stats,
     }
     report_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -335,8 +397,9 @@ def main(argv: list[str]) -> int:
         output_path = input_path.with_name(input_path.stem + "_pure.mp4")
 
     output_probe = None
+    render_stats = None
     if output_path and not args.dry_run:
-        render_keep_ranges(
+        render_stats = render_keep_ranges(
             input_path,
             output_path,
             keep_ranges,
@@ -345,6 +408,10 @@ def main(argv: list[str]) -> int:
             copy_codecs=args.copy_codecs,
             encoder_preset=args.preset,
             crf=args.crf,
+            has_audio=any(
+                stream.get("codec_type") == "audio"
+                for stream in input_probe.get("streams") or []
+            ),
         )
         output_probe = probe(output_path, ffprobe)
 
@@ -358,6 +425,7 @@ def main(argv: list[str]) -> int:
         keep_ranges=keep_ranges,
         input_probe=input_probe,
         output_probe=output_probe,
+        render_stats=render_stats,
     )
     print(f"报告：{report_path}")
     if output_path:

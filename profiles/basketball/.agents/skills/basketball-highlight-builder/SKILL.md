@@ -1,9 +1,10 @@
 ---
 name: basketball-highlight-builder
 description: Build basketball highlight reels from labeled event clips or full-game cut clips. Use when Codex needs to create, reorder, trim, de-duplicate, validate, or label basketball highlight videos; handle clips named with team, jersey number, player, event, period, and timestamp; preserve source videos while producing new MP4 outputs; or prepare structured event plans for later tactical analysis.
-x-provenance: local
-x-owner: cm
-x-source-note: created from local basketball highlight workflow
+metadata:
+  provenance: local
+  owner: cm
+  source-note: created from local basketball highlight workflow
 ---
 
 # Basketball Highlight Builder
@@ -12,6 +13,7 @@ x-source-note: created from local basketball highlight workflow
 
 1. Inventory clips before editing. Parse team, jersey number, player, event type, period, clock/timestamp, source path, and duration into a JSON plan.
    Stop with an actionable error when no clip matches the filename contract or the requested team has no parsed clips.
+   When the source is a player-event pipeline, also require passed location/stat audits and action evidence fingerprint-bound to the exact reviewed matches CSV. Do not build from an older, manually edited, or unaudited CSV.
 2. Filter to the requested team first. Keep opponent clips out unless the user explicitly asks for both teams.
 3. Exclude unusable clips early: missing scoreboard, pause screens, duplicate replays, wrong team, or stale quarter-transition frames.
 4. De-duplicate same-possession clips with a small clock window. Prefer made shots, then blocks/steals, then assists; apply a player bonus when the user asks for more of one player.
@@ -20,7 +22,14 @@ x-source-note: created from local basketball highlight workflow
 7. Build a new output file. Never overwrite a previous accepted cut unless the user explicitly asks.
 8. Validate with `ffprobe`, extracted frames around suspicious timestamps, and a count of clips/player distribution when relevant.
 
-The build gate passes when the plan contains at least one intended clip, the concat list count matches the plan, the output fully decodes, and reviewed frames preserve the scoreboard and readable labels.
+## Viewer-facing data-label contract
+
+- Personal event clips, personal reels, team reels, and game highlights are data-labeled by default.
+- Every visible event label must include team, jersey number/player, action, period, and game clock. Add official full-game totals only when they come from the normalized match JSON.
+- Name deliverables with `_数据标注版.mp4` and record `data_label_status: data_labeled` in the plan/report.
+- `--raw-no-overlay` is for diagnostics or temporary concatenation only. Never upload, hand off, or count a `raw_intermediate` file as complete.
+
+The build gate passes when upstream event identity is approved, the plan contains at least one intended clip, the concat list count matches the plan, the output fully decodes, and reviewed frames preserve the scoreboard and readable labels. De-duplication and ordering may remove events; they must never be used to repair uncertain event ownership.
 
 ## Preferred Script
 
@@ -38,8 +47,7 @@ python /Users/cm/Documents/me/Skills/basketball-highlight-builder/scripts/build_
   --priority-player 李天驰 \
   --plan-json data/highlight_plan.json \
   --concat-file data/highlight_concat.txt \
-  --output output/highlight_labeled.mp4 \
-  --overlay-labels
+  --output output/highlight_数据标注版.mp4
 ```
 
 If Pillow is not installed and labels are requested, run with a temporary dependency:
@@ -64,9 +72,9 @@ When a user reports score regression:
 For each clip, use a concise top-left label:
 
 ```text
-30号 李天驰 2分命中
-35号 陈君春 抢断
-62号 戴庆标 3分命中
+风暴队｜30号 李天驰｜2分命中｜第四节 01:24
+风暴队｜35号 陈君春｜抢断｜第二节 06:18
+风暴队｜62号 戴庆标｜3分命中｜第三节 02:40
 ```
 
 Prefer a semi-transparent dark rectangle with white text. Keep labels away from the bottom scoreboard. If ffmpeg lacks `drawtext`, render text to transparent PNGs with Pillow and use `overlay=...:shortest=1`.

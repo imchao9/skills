@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from datetime import datetime
+import hashlib
 import json
 import re
 import shlex
@@ -15,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 
 SKILL_DIR = Path(__file__).parents[1]
@@ -23,8 +26,11 @@ FETCH_MATCH = SKILLS_DIR / "xiaoqiumi-match-review" / "scripts" / "fetch_xiaoqiu
 DOWNLOAD_REPLAY = SKILL_DIR / "scripts" / "xiaoqiumi_download.py"
 ASSEMBLE_REPLAYS = SKILL_DIR / "scripts" / "assemble_replay_segments.py"
 DOWNLOAD_EVENTS = SKILL_DIR / "scripts" / "download_event_clips.py"
+LOCATE_EVENTS = SKILL_DIR / "scripts" / "locate_event_thumbnails.py"
+RENDER_DIRECT_EVENTS = SKILL_DIR / "scripts" / "render_player_reels_from_matches.py"
 PURE_SKILL = SKILLS_DIR / "basketball-pure-cut"
-PLAYER_SKILL = Path.home() / ".codex" / "skills" / "basketball-player-clips"
+PLAYER_SKILL = SKILLS_DIR / "basketball-player-clips"
+ACTION_KEYWORDS = {"2分命中", "3分命中", "助攻", "抢断", "盖帽"}
 
 
 class ReplayUnavailableError(ValueError):
@@ -40,11 +46,21 @@ class ReplayDownloadNeedsAttention(RuntimeError):
         self.payload = payload
 
 
+class EventDirectNeedsAttention(RuntimeError):
+    """Raised when metadata cannot support trustworthy direct event rendering."""
+
+
+class DiskPreflightNeedsAttention(RuntimeError):
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(str(payload["reason"]))
+        self.payload = payload
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("match", help="Xiaoqiumi match URL or numeric match ID.")
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--event-workers", type=int, default=8)
+    parser.add_argument("--event-workers", type=int, default=2)
     parser.add_argument("--replay-connections", type=int, default=8)
     parser.add_argument("--replay-download-attempts", type=int, default=3)
     parser.add_argument("--replay-stall-seconds", type=float, default=90)
@@ -54,9 +70,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-max-eta-seconds", type=float, default=3600)
     parser.add_argument("--replay-eta-grace-seconds", type=float, default=600)
     parser.add_argument("--download-only", action="store_true", help="Stop before deterministic editing preflight.")
-    parser.add_argument("--skip-event-clips", action="store_true", help="Download only the full replay, not platform event videos.")
+    parser.add_argument(
+        "--event-source",
+        choices=("direct", "platform"),
+        default="direct",
+        help="Locate events in the full replay by default; use platform only as an explicit fallback.",
+    )
+    parser.add_argument(
+        "--skip-event-clips",
+        action="store_true",
+        help="Deprecated compatibility alias for --event-source direct.",
+    )
     parser.add_argument("--skip-pure-preflight", action="store_true")
     parser.add_argument("--skip-player-clips", action="store_true")
+    parser.add_argument("--skip-disk-preflight", action="store_true")
+    parser.add_argument("--disk-reserve-gib", type=float, default=0.5)
     parser.add_argument("--report", type=Path)
     return parser.parse_args()
 
@@ -268,6 +296,49 @@ def event_count(data: dict[str, Any]) -> int:
     )
 
 
+def direct_event_count(data: dict[str, Any]) -> int:
+    return sum(
+        1
+        for item in video_container(data).get("collectVideos") or []
+        if (
+            item.get("subName") in ACTION_KEYWORDS
+            and str(item.get("reletedPlayerName") or "").strip()
+            and str(item.get("urlThumbnail") or "").strip()
+        )
+    )
+
+
+def event_direct_fingerprint(match_json: Path, source: Path) -> str:
+    data = json.loads(match_json.read_text(encoding="utf-8"))
+    events = []
+    for item in video_container(data).get("collectVideos") or []:
+        if item.get("subName") not in ACTION_KEYWORDS:
+            continue
+        thumbnail = str(item.get("urlThumbnail") or "")
+        events.append({
+            key: item.get(key)
+            for key in ("id", "title", "teamName", "shirtNo", "reletedPlayerName", "subName")
+        } | {"thumbnail_path": urlsplit(thumbnail).path})
+    digest = hashlib.sha256(
+        json.dumps(sorted(events, key=lambda item: str(item.get("id"))), ensure_ascii=False, sort_keys=True).encode()
+    )
+    size = source.stat().st_size
+    digest.update(str(size).encode("ascii"))
+    with source.open("rb") as handle:
+        for offset in (0, max(0, size // 2 - 512 * 1024), max(0, size - 1024 * 1024)):
+            handle.seek(offset)
+            digest.update(handle.read(1024 * 1024))
+    return digest.hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def safe_local_name(value: str) -> str:
     return value.replace("/", "-").replace("\0", "").strip()
 
@@ -278,6 +349,29 @@ def require_tools(paths: list[Path]) -> None:
         missing.append("ffprobe")
     if missing:
         raise FileNotFoundError(f"missing required tools: {missing}")
+
+
+def disk_preflight(run_dir: Path, source_bytes: int, reserve_gib: float) -> dict[str, Any]:
+    usage = shutil.disk_usage(run_dir)
+    reserve = max(0, int(reserve_gib * 1024 ** 3))
+    estimated_outputs = int(source_bytes * 1.6)
+    required_free = estimated_outputs + reserve
+    payload = {
+        "name": "disk_preflight",
+        "status": "complete" if usage.free >= required_free else "needs_attention",
+        "available_bytes": usage.free,
+        "source_bytes": source_bytes,
+        "estimated_final_and_peak_temporary_bytes": estimated_outputs,
+        "reserve_bytes": reserve,
+        "required_free_bytes": required_free,
+        "shortfall_bytes": max(0, required_free - usage.free),
+    }
+    if payload["status"] != "complete":
+        payload["reason"] = (
+            f"insufficient disk space: need {required_free} free bytes, have {usage.free}"
+        )
+        raise DiskPreflightNeedsAttention(payload)
+    return payload
 
 
 def acquire_replays(
@@ -421,6 +515,126 @@ def player_clips(source: Path, events: Path, run_dir: Path) -> list[dict[str, An
     return [stage]
 
 
+def event_direct_player_clips(
+    source: Path,
+    match_json: Path,
+    run_dir: Path,
+    expected_events: int,
+    event_workers: int,
+) -> list[dict[str, Any]]:
+    if expected_events <= 0:
+        raise EventDirectNeedsAttention(
+            "no player-labeled event thumbnails are available for event-direct rendering; "
+            "use --event-source platform or --skip-player-clips"
+        )
+    output = run_dir / "output" / "player-clips-front15"
+    reports = output / "reports"
+    locations = reports / "event-locations.csv"
+    location_audit = reports / "event-location-audit.json"
+    stat_audit = reports / "event-stat-audit.json"
+    action_evidence = reports / "action-evidence.json"
+    matches = reports / "matches.csv"
+    players = reports / "players.csv"
+    cache = reports / "event-direct-cache.json"
+    stages: list[dict[str, Any]] = []
+    fingerprint = event_direct_fingerprint(match_json, source)
+    cached_payload = {}
+    if cache.is_file():
+        try:
+            cached_payload = json.loads(cache.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cached_payload = {}
+    cached_reels = sorted((output / "个人精彩集锦").glob("*.mp4"))
+    if (
+        locations.is_file()
+        and
+        matches.is_file()
+        and players.is_file()
+        and cached_payload.get("fingerprint") == fingerprint
+        and location_audit.is_file()
+        and json.loads(location_audit.read_text(encoding="utf-8")).get("status") == "complete"
+        and stat_audit.is_file()
+        and json.loads(stat_audit.read_text(encoding="utf-8")).get("status") == "complete"
+        and action_evidence.is_file()
+        and json.loads(action_evidence.read_text(encoding="utf-8")).get("status") == "complete"
+        and cached_payload.get("locations_sha256") == file_sha256(locations)
+        and cached_payload.get("matches_sha256") == file_sha256(matches)
+        and cached_reels
+        and all(probe(path) is not None for path in cached_reels)
+    ):
+        return [{"name": "event_direct_player_clips", "status": "cached", "path": str(output)}]
+
+    if not locations.is_file() or cached_payload.get("fingerprint") != fingerprint:
+        try:
+            stages.append(run_logged(
+                "locate_event_thumbnails",
+                [
+                    sys.executable, str(LOCATE_EVENTS), "--match-json", str(match_json),
+                    "--source", str(source), "--output-csv", str(locations),
+                    "--audit-report", str(location_audit), "--workers", str(event_workers),
+                ],
+                run_dir / "output" / "delivery" / "logs" / "locate-event-thumbnails.log",
+            ))
+        except RuntimeError as exc:
+            if location_audit.is_file():
+                audit = json.loads(location_audit.read_text(encoding="utf-8"))
+                if audit.get("status") == "needs_attention":
+                    raise EventDirectNeedsAttention(
+                        f"event locator blocked {audit.get('blocked_events')} anomalous row(s); "
+                        f"review {location_audit} or use --event-source platform"
+                    ) from exc
+            raise
+    else:
+        stages.append({"name": "locate_event_thumbnails", "status": "cached", "path": str(locations)})
+
+    with locations.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    if not location_audit.is_file():
+        raise EventDirectNeedsAttention(f"missing fail-closed location audit: {location_audit}")
+    audit = json.loads(location_audit.read_text(encoding="utf-8"))
+    if audit.get("status") != "complete" or audit.get("blockers"):
+        raise EventDirectNeedsAttention(f"event location audit did not pass: {location_audit}")
+    if len(rows) != expected_events:
+        raise RuntimeError(
+            f"event-direct location count mismatch: expected {expected_events}, found {len(rows)}"
+        )
+    seen_titles: dict[str, int] = {}
+    for row in rows:
+        if row.get("location_status") != "accepted":
+            raise EventDirectNeedsAttention(
+                f"event location is not accepted: {row.get('event_id')} {row.get('title')}"
+            )
+        title = row["title"]
+        seen_titles[title] = seen_titles.get(title, 0) + 1
+        if seen_titles[title] > 1:
+            row["title"] = f"{title}_{row['event_id'][:8]}"
+        row["source"] = str(source.resolve())
+    matches.parent.mkdir(parents=True, exist_ok=True)
+    with matches.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    command = [
+        sys.executable, str(RENDER_DIRECT_EVENTS), "--matches-csv", str(matches),
+        "--output-dir", str(output), "--match-json", str(match_json),
+        "--contact-sheets", "--low-peak",
+    ]
+    stages.append(run_logged(
+        "render_event_direct_player_clips",
+        command,
+        run_dir / "output" / "delivery" / "logs" / "render-event-direct-player-clips.log",
+    ))
+    write_json(cache, {
+        "version": 2,
+        "fingerprint": fingerprint,
+        "locations_sha256": file_sha256(locations),
+        "matches_sha256": file_sha256(matches),
+        "location_audit": str(location_audit.resolve()),
+    })
+    return stages
+
+
 def run_parallel(tasks: dict[str, Callable[[], list[dict[str, Any]]]]) -> list[dict[str, Any]]:
     stages: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -432,6 +646,9 @@ def run_parallel(tasks: dict[str, Callable[[], list[dict[str, Any]]]]) -> list[d
 
 def main() -> int:
     args = parse_args()
+    if args.skip_event_clips and args.event_source == "platform":
+        raise SystemExit("--skip-event-clips conflicts with --event-source platform")
+    event_source = "direct" if args.skip_event_clips else args.event_source
     started = time.monotonic()
     workspace = args.workspace.resolve()
     match_id = match_id_from_ref(args.match)
@@ -447,12 +664,15 @@ def main() -> int:
         "matchID": match_id,
         "run_dir": str(run_dir),
         "mode": "download-only" if args.download_only else "fast-start",
+        "event_source": event_source,
         "stages": stages,
     }
     write_json(report, payload)
 
     try:
-        require_tools([FETCH_MATCH, DOWNLOAD_REPLAY, ASSEMBLE_REPLAYS, DOWNLOAD_EVENTS])
+        required = [FETCH_MATCH, DOWNLOAD_REPLAY, ASSEMBLE_REPLAYS]
+        required.append(DOWNLOAD_EVENTS if event_source == "platform" else LOCATE_EVENTS)
+        require_tools(required)
         stages.append(run_logged(
             "refresh_match_data",
             [sys.executable, str(FETCH_MATCH), str(match_id), "--out", str(match_json), "--facts-md", str(facts_md)],
@@ -467,7 +687,8 @@ def main() -> int:
         source_suffix = "" if len(replays) == 1 else f"_完整回放_{len(replays)}段_{replay_ids}"
         source = run_dir / "source" / f"{source_title}{source_suffix}.mp4"
         events = run_dir / "source" / "labeled-events"
-        expected_events = 0 if args.skip_event_clips else event_count(data)
+        metadata_events = direct_event_count(data)
+        expected_downloaded_events = event_count(data) if event_source == "platform" else 0
         selected_ids = {str(item.get("id") or item.get("url")) for item in replays}
         eligible_ids = {str(item.get("id") or item.get("url")) for item in all_replays}
         selected_long = [item for item in replays if replay_time(item) >= 20 * 60]
@@ -516,7 +737,7 @@ def main() -> int:
             )
         else:
             stages.append({"name": "download_replays", "status": "cached", "path": str(source)})
-        if not args.skip_event_clips:
+        if event_source == "platform":
             download_tasks["events"] = lambda: [run_logged(
                 "download_events",
                 [sys.executable, str(DOWNLOAD_EVENTS), str(match_json), "--output-dir", str(events),
@@ -531,20 +752,32 @@ def main() -> int:
         active_parts = sorted(str(path) for path in (run_dir / "source").rglob("*.part"))
         if source_probe is None:
             raise RuntimeError(f"replay validation failed: {source}")
-        if downloaded_events != expected_events:
-            raise RuntimeError(f"event count mismatch: expected {expected_events}, found {downloaded_events}")
+        if event_source == "platform" and downloaded_events != expected_downloaded_events:
+            raise RuntimeError(
+                f"event count mismatch: expected {expected_downloaded_events}, found {downloaded_events}"
+            )
         if active_parts:
             raise RuntimeError(f"active partial downloads remain: {active_parts}")
+        if not args.download_only and not args.skip_disk_preflight:
+            stages.append(disk_preflight(
+                run_dir,
+                int(source_probe["format"]["size"]),
+                args.disk_reserve_gib,
+            ))
 
         if not args.download_only:
             processing: dict[str, Callable[[], list[dict[str, Any]]]] = {}
             if not args.skip_pure_preflight:
                 processing["pure"] = lambda: pure_preflight(source, run_dir)
             if not args.skip_player_clips:
-                if args.skip_event_clips:
-                    raise ValueError("--skip-event-clips requires --skip-player-clips outside download-only mode")
-                require_tools([PLAYER_SKILL / "scripts" / "remake_player_clips.py"])
-                processing["players"] = lambda: player_clips(source, events, run_dir)
+                if event_source == "direct":
+                    require_tools([RENDER_DIRECT_EVENTS])
+                    processing["players"] = lambda: event_direct_player_clips(
+                        source, match_json, run_dir, metadata_events, args.event_workers
+                    )
+                else:
+                    require_tools([PLAYER_SKILL / "scripts" / "remake_player_clips.py"])
+                    processing["players"] = lambda: player_clips(source, events, run_dir)
             if processing:
                 stages.extend(run_parallel(processing))
 
@@ -558,7 +791,10 @@ def main() -> int:
             "replay_segment_count": len(replays),
             "replay_selection": str(delivery / "replay-selection.json"),
             "events_dir": str(events),
-            "event_count": downloaded_events,
+            "event_source": event_source,
+            "event_metadata_count": metadata_events,
+            "event_download_count": downloaded_events if event_source == "platform" else 0,
+            "event_count": metadata_events if event_source == "direct" else downloaded_events,
             "stages": stages,
             "ai_review": [
                 "review pure-cut candidate contact sheet and approve deletion boundaries",
@@ -636,6 +872,71 @@ def main() -> int:
             "match": payload["match"],
             "resume_command": payload["resume_command"],
         }, ensure_ascii=False, indent=2))
+        return 2
+    except EventDirectNeedsAttention as exc:
+        platform_reference_command = shlex.join([
+            sys.executable, str(Path(__file__).resolve()), str(match_id),
+            "--workspace", str(workspace), "--event-source", "platform",
+        ])
+        pure_only_command = shlex.join([
+            sys.executable, str(Path(__file__).resolve()), str(match_id),
+            "--workspace", str(workspace), "--skip-player-clips",
+        ])
+        payload.update({
+            "status": "needs_attention",
+            "phase": "event_location",
+            "seconds": round(time.monotonic() - started, 3),
+            "reason": str(exc),
+            "event_source": event_source,
+            "event_metadata_count": metadata_events,
+            "event_download_count": 0,
+            "replay_segment_count": len(replays),
+            "replay_selection": str((delivery / "replay-selection.json").resolve()),
+            "assembled_source": str(source.resolve()),
+            "standard_package_blocked": True,
+            "sparse_event_policy": "do_not_create_or_claim player reels without player identity",
+            "fallback_options": {
+                "platform_reference_command": platform_reference_command,
+                "pure_only_command": pure_only_command,
+                "warning": "platform references do not satisfy personal-reel delivery when player identity is absent",
+            },
+            "stages": stages,
+            "action_required": (
+                "Review or assign missing player identities. Platform clips may be fetched only as references; "
+                "do not mark the standard package complete without trustworthy player reels."
+            ),
+            "resume_command": shlex.join([
+                sys.executable, str(Path(__file__).resolve()), str(match_id),
+                "--workspace", str(workspace),
+            ]),
+            "auto_shutdown_allowed": False,
+        })
+        write_json(report, payload)
+        print(json.dumps({
+            "status": payload["status"],
+            "matchID": match_id,
+            "phase": payload["phase"],
+            "reason": payload["reason"],
+            "resume_command": payload["resume_command"],
+        }, ensure_ascii=False, indent=2))
+        return 2
+    except DiskPreflightNeedsAttention as exc:
+        payload.update({
+            "status": "needs_attention",
+            "phase": "disk_preflight",
+            "seconds": round(time.monotonic() - started, 3),
+            "reason": str(exc),
+            "disk": exc.payload,
+            "stages": stages,
+            "action_required": "Free disk space, then run the resume command; the downloaded replay is retained.",
+            "resume_command": shlex.join([
+                sys.executable, str(Path(__file__).resolve()), str(match_id),
+                "--workspace", str(workspace),
+            ]),
+            "auto_shutdown_allowed": False,
+        })
+        write_json(report, payload)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 2
     except Exception as exc:
         payload.update({

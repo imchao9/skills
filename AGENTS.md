@@ -74,5 +74,4 @@ x-source-note: local project-specific skill; original source not fully confirmed
 - 不要把类型目录放进 `.agents/skills/` 下面；agent 运行时保持 `.agents/skills/<skill-name>/SKILL.md` 的扁平结构。
 - 不引入 CStack 的 `role / workflow / pack / preset / doctor / sync` 体系；这个仓库只保存可被 Git source 安装复用的 `.agents`。
 - 不新增脚本、CLI、manifest 或 source registry；需要安装时直接跑 Vercel CLI，装完提交 Git。
-- 终端命令默认通过 `rtk proxy` 执行。
 - 本机代理可能影响 npm/GitHub 请求；运行 Vercel CLI 时优先临时清掉 `http_proxy`、`https_proxy`、`all_proxy`。

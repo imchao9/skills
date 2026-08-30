@@ -11,3 +11,4 @@ __pycache__/
 profiles/*/.agents/skills/*/data/
 .agents/skills/*/output/
 profiles/*/.agents/skills/*/output/
+profiles/*/.agents/skills/*/.env

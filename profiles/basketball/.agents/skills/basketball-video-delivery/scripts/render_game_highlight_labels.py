@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import re
+import shutil
 import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -86,8 +87,9 @@ def event_text(row: dict[str, str]) -> str:
         ]
         if scores:
             scorer = scores[0]
-            return f'{chosen["player"]} 助攻 {scorer["player"]} {scorer["action"]}'
-    return f'{chosen["player"]} {chosen["action"]}'
+            action = f'{chosen["player"]} 助攻 {scorer["player"]} {scorer["action"]}'
+            return f'{action}｜{row["period"]} {row["clock"]}'
+    return f'{chosen["player"]} {chosen["action"]}｜{row["period"]} {row["clock"]}'
 
 
 def font_path() -> str:
@@ -171,7 +173,10 @@ def main() -> int:
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
         "-i", str(concat), "-c", "copy", str(args.output),
     ])
+    work_bytes = sum(path.stat().st_size for path in work.rglob("*") if path.is_file())
+    shutil.rmtree(work)
     print(f"segments: {len(rendered)}")
+    print(f"reclaimed_work_bytes: {work_bytes}")
     print(f"output: {args.output}")
     return 0
 

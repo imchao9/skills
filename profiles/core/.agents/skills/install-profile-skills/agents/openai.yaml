@@ -1,0 +1,4 @@
+interface:
+  display_name: "安装 Skill Profiles"
+  short_description: "安全安装或软链接 Profile 到项目、指定目录或全局运行态"
+  default_prompt: "使用 $install-profile-skills 先 dry-run，再把指定 profile 复制或软链接到我给出的目标目录。"

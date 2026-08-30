@@ -13,7 +13,7 @@ from typing import Iterable
 
 EVENT_PATTERN = re.compile(
     r"^(?P<team>.+?)\s+"
-    r"(?P<number>\d+)号\s+"
+    r"(?P<number>\d+|-)号\s+"
     r"(?P<player>.+?)\s+"
     r"(?P<event>2分命中|3分命中|助攻|抢断|盖帽)\s+"
     r"(?P<period>第一节|第二节|第三节|第四节|加时\d+)\s+"
@@ -29,7 +29,7 @@ PERIOD_ORDER = {"第一节": 1, "第二节": 2, "第三节": 3, "第四节": 4}
 @dataclass(frozen=True)
 class Clip:
     team: str
-    number: int
+    number: str
     player: str
     event: str
     period: str
@@ -56,7 +56,14 @@ def main() -> None:
     parser.add_argument("--plan-json", default="data/highlight_plan.json")
     parser.add_argument("--concat-file", default="data/highlight_concat.txt")
     parser.add_argument("--output", default="output/highlight.mp4")
-    parser.add_argument("--overlay-labels", action="store_true")
+    parser.add_argument(
+        "--overlay-labels", action="store_true", default=True,
+        help="Render viewer-facing data labels (default).",
+    )
+    parser.add_argument(
+        "--raw-no-overlay", action="store_false", dest="overlay_labels",
+        help="Create an unlabeled intermediate only; never deliver this output to viewers.",
+    )
     parser.add_argument("--plan-only", action="store_true")
     args = parser.parse_args()
 
@@ -100,6 +107,7 @@ def main() -> None:
                 "duration_seconds": round(sum(effective_duration(c, args.trim_tail_seconds) for c in clips), 3),
                 "plan_json": str(plan_path),
                 "output": str(output_path) if not args.plan_only else None,
+                "data_label_status": "data_labeled" if args.overlay_labels else "raw_intermediate",
             },
             ensure_ascii=False,
         )
@@ -126,7 +134,7 @@ def parse_clip(root: Path, path: Path) -> Clip | None:
     event = data["event"]
     return Clip(
         team=data["team"],
-        number=int(data["number"]),
+        number=data["number"],
         player=data["player"],
         event=event,
         period=data["period"],
@@ -204,6 +212,7 @@ def write_plan(clips: list[Clip], path: Path, args: argparse.Namespace) -> None:
         "dedupe_window_seconds": args.dedupe_window_seconds,
         "priority_player": args.priority_player,
         "clock_order": args.clock_order,
+        "data_label_status": "data_labeled" if args.overlay_labels else "raw_intermediate",
         "clips": [asdict(clip) | {"label": format_label(clip)} for clip in clips],
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -298,7 +307,7 @@ def write_label_images(labels: list[str], output_dir: Path) -> list[Path]:
 
 
 def format_label(clip: Clip) -> str:
-    return f"{clip.number}号 {clip.player} {clip.event}"
+    return f"{clip.team}｜{clip.number}号 {clip.player}｜{clip.event}｜{clip.period} {clip.clock}"
 
 
 def read_concat_paths(path: Path) -> list[Path]:

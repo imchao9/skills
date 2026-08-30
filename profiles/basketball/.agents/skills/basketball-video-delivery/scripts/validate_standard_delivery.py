@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import struct
 import subprocess
@@ -114,7 +115,10 @@ def main() -> int:
     player_reels: list[Path] = []
     player_dir: Path | None = None
     for directory in player_dirs:
-        player_reels = files(directory, "*.mp4")
+        raw_reels = files(directory, "*.mp4")
+        player_reels = [path for path in raw_reels if "数据标注版" in path.name]
+        if raw_reels and not player_reels:
+            errors.append(f"viewer-facing player reels are not data-labeled: {directory}")
         if player_reels:
             player_dir = directory
             break
@@ -122,16 +126,52 @@ def main() -> int:
         errors.append("missing player reels")
     expected_player_count: int | None = None
     if player_dir:
-        players_csv = player_dir.parent / "reports" / "players.csv"
+        player_reports = player_dir.parent / "reports"
+        players_csv = player_reports / "players.csv"
         if not players_csv.is_file():
             errors.append(f"missing players.csv: {players_csv}")
         else:
-            expected_player_count = len(csv_rows(players_csv))
+            player_rows = csv_rows(players_csv)
+            expected_player_count = len(player_rows)
+            if any(row.get("data_label_status") != "data_labeled" for row in player_rows):
+                errors.append(f"players.csv contains non-deliverable raw outputs: {players_csv}")
             if len(player_reels) != expected_player_count:
                 errors.append(
                     f"player reel count mismatch: expected {expected_player_count}, "
                     f"found {len(player_reels)}"
                 )
+        rendered_matches = player_reports / "rendered-matches.csv"
+        location_audit = player_reports / "event-location-audit.json"
+        stat_audit = player_reports / "event-stat-audit.json"
+        action_evidence = player_reports / "action-evidence.json"
+        for label, path in (("location", location_audit), ("statistics", stat_audit)):
+            if not path.is_file():
+                errors.append(f"missing player {label} audit: {path}")
+                continue
+            audit = json.loads(path.read_text(encoding="utf-8"))
+            if audit.get("status") != "complete" or audit.get("blockers") or audit.get("errors"):
+                errors.append(f"player {label} audit did not pass: {path}")
+        if not action_evidence.is_file():
+            errors.append(f"missing player action evidence: {action_evidence}")
+        elif not rendered_matches.is_file():
+            errors.append(f"missing rendered player matches: {rendered_matches}")
+        else:
+            evidence = json.loads(action_evidence.read_text(encoding="utf-8"))
+            scoring_rows = [
+                row for row in csv_rows(rendered_matches)
+                if row.get("action") in {"2分命中", "3分命中"}
+            ]
+            expected_hash = hashlib.sha256(rendered_matches.read_bytes()).hexdigest()
+            if evidence.get("status") != "complete":
+                errors.append(f"player action evidence did not complete: {action_evidence}")
+            if evidence.get("matches_csv_sha256") != expected_hash:
+                errors.append(f"player action evidence is stale: {action_evidence}")
+            if evidence.get("scoring_event_count") != len(scoring_rows):
+                errors.append("player action evidence count does not match scoring rows")
+            for item in evidence.get("items") or []:
+                frame = Path(str(item.get("evidence_frame") or ""))
+                if not frame.is_file() or frame.stat().st_size <= 0:
+                    errors.append(f"missing player action evidence frame: {frame}")
 
     game_candidates = files(output / "game-highlight", "*数据标注版.mp4")
     game = first_existing(game_candidates)
@@ -141,6 +181,7 @@ def main() -> int:
     poster_dir = output / "球评海报"
     poster_html = first_existing(files(poster_dir, "*_球评海报.html"))
     poster_png = first_existing(files(poster_dir, "*_球评海报.png"))
+    audit_report = first_existing(files(poster_dir, "*_球评审校.json"))
     commentary = first_existing(files(output, "球评_*.md"))
     if not commentary:
         errors.append("missing commentary Markdown")
@@ -148,6 +189,12 @@ def main() -> int:
         errors.append("missing commentary HTML")
     if not poster_png:
         errors.append("missing commentary PNG")
+    if not audit_report:
+        errors.append("missing commentary fact-audit report")
+    else:
+        audit = json.loads(audit_report.read_text(encoding="utf-8"))
+        if audit.get("status") != "passed" or audit.get("errors"):
+            errors.append(f"commentary fact audit did not pass: {audit_report}")
 
     manifest: dict[str, Any] = {
         "status": "failed",
@@ -160,6 +207,7 @@ def main() -> int:
                 "markdown": str(commentary.resolve()) if commentary else None,
                 "html": str(poster_html.resolve()) if poster_html else None,
                 "png": str(poster_png.resolve()) if poster_png else None,
+                "audit_report": str(audit_report.resolve()) if audit_report else None,
             },
         },
         "errors": errors,

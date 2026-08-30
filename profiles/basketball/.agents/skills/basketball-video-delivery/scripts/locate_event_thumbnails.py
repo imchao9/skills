@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import importlib.util
 import json
 import re
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-PLAYER_SCRIPT = Path.home() / ".codex" / "skills" / "basketball-player-clips" / "scripts" / "remake_player_clips.py"
+PLAYER_SCRIPT = Path(__file__).parents[1].parent / "basketball-player-clips" / "scripts" / "remake_player_clips.py"
 SPEC = importlib.util.spec_from_file_location("basketball_player_clips_runtime", PLAYER_SCRIPT)
 if not SPEC or not SPEC.loader:
     raise SystemExit(f"Unable to load player clip runtime: {PLAYER_SCRIPT}")
@@ -60,6 +61,13 @@ def parse_args() -> argparse.Namespace:
         help="Visually reviewed source start for a 12-minute period, for example 2=904.",
     )
     parser.add_argument("--stoppage-weight", type=float, default=0.2)
+    parser.add_argument("--max-adjustment-seconds", type=float, default=30.0)
+    parser.add_argument("--max-hamming-regression", type=int, default=128)
+    parser.add_argument(
+        "--audit-report",
+        type=Path,
+        help="Fail-closed event-location audit JSON (defaults beside output CSV).",
+    )
     return parser.parse_args()
 
 
@@ -77,6 +85,7 @@ def collect_events(data: dict) -> list[Event]:
         if action not in ACTION_KEYWORDS or not player or not thumbnail:
             continue
         label = runtime.parse_clip_name(Path(title + ".mp4"))
+        period = re.sub(r"(?:结束|完)$", "", label.period).strip()
         events.append(Event(
             event_id=str(item.get("id") or ""),
             title=title,
@@ -84,7 +93,7 @@ def collect_events(data: dict) -> list[Event]:
             number=str(item.get("shirtNo") or label.number).removesuffix("号"),
             player=player,
             action=action,
-            period=label.period,
+            period=period,
             clock=label.clock,
             thumbnail_url=thumbnail,
         ))
@@ -149,7 +158,7 @@ def thumbnail_hash(url: str) -> int:
             with urllib.request.urlopen(request, timeout=30) as response:
                 image = response.read()
             break
-        except OSError as exc:
+        except (OSError, http.client.HTTPException) as exc:
             last_error = exc
             if attempt < 2:
                 time.sleep(1 + attempt)
@@ -169,6 +178,40 @@ def thumbnail_hash(url: str) -> int:
     if result.returncode or len(result.stdout) != expected:
         raise RuntimeError("unable to decode event thumbnail")
     return dhash(result.stdout, SIGNATURE_W, SIGNATURE_H)
+
+
+def write_hash_cache(path: Path, hashes: dict[str, int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps({
+        "signature": [SIGNATURE_W, SIGNATURE_H],
+        "hashes": hashes,
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def fetch_thumbnail_hashes(
+    events: list[Event],
+    hashes: dict[str, int],
+    cache_path: Path,
+    workers: int,
+) -> None:
+    failures: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = {pool.submit(thumbnail_hash, event.thumbnail_url): event for event in events}
+        for future in as_completed(futures):
+            event = futures[future]
+            try:
+                hashes[event.event_id] = future.result()
+            except Exception as exc:
+                failures[event.event_id] = str(exc)
+                continue
+            write_hash_cache(cache_path, hashes)
+    if failures:
+        sample = next(iter(failures.values()))
+        raise RuntimeError(
+            f"unable to fetch {len(failures)} event thumbnail(s) after retries; first error: {sample}"
+        )
 
 
 def best_thumbnail_match(source_hashes: list[int], target: int) -> tuple[int, int, int]:
@@ -208,6 +251,26 @@ def parse_period_starts(values: list[str]) -> dict[int, float]:
             raise ValueError(f"invalid period start: {value}")
         starts[int(period_text)] = float(seconds_text)
     return starts
+
+
+def location_anomalies(
+    *,
+    aligned_seconds: float,
+    raw_seconds: float,
+    aligned_hamming: int,
+    best_hamming: int,
+    max_adjustment_seconds: float,
+    max_hamming_regression: int,
+) -> list[str]:
+    """Return blockers for a locator result that is unsafe to render automatically."""
+    reasons: list[str] = []
+    adjustment = abs(aligned_seconds - raw_seconds)
+    regression = aligned_hamming - best_hamming
+    if adjustment > max_adjustment_seconds:
+        reasons.append("large_alignment_adjustment")
+    if regression > max_hamming_regression:
+        reasons.append("aligned_match_much_worse_than_raw_best")
+    return reasons
 
 
 def align_monotonic(
@@ -348,16 +411,7 @@ def main() -> int:
             cache = {str(key): int(value) for key, value in (cached_payload.get("hashes") or {}).items()}
     hashes = {event.event_id: cache[event.event_id] for event in events if event.event_id in cache}
     missing = [event for event in events if event.event_id not in hashes]
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        futures = {pool.submit(thumbnail_hash, event.thumbnail_url): event for event in missing}
-        for future in as_completed(futures):
-            event = futures[future]
-            hashes[event.event_id] = future.result()
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps({
-        "signature": [SIGNATURE_W, SIGNATURE_H],
-        "hashes": hashes,
-    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    fetch_thumbnail_hashes(missing, hashes, cache_path, args.workers)
     source_hashes = extract_overlay_hashes(args.source.resolve())
     target_hashes = [hashes[event.event_id] for event in events]
     period_starts = parse_period_starts(args.period_start)
@@ -368,43 +422,85 @@ def main() -> int:
         period_starts=period_starts,
         stoppage_weight=args.stoppage_weight,
     )
+    rows: list[dict[str, object]] = []
+    blockers: list[dict[str, object]] = []
+    for event, (index, aligned_score) in zip(events, aligned):
+        raw_index, best, second = best_thumbnail_match(source_hashes, hashes[event.event_id])
+        seconds = index / runtime.HASH_FPS
+        raw_seconds = raw_index / runtime.HASH_FPS
+        reasons = location_anomalies(
+            aligned_seconds=seconds,
+            raw_seconds=raw_seconds,
+            aligned_hamming=aligned_score,
+            best_hamming=best,
+            max_adjustment_seconds=args.max_adjustment_seconds,
+            max_hamming_regression=args.max_hamming_regression,
+        )
+        row: dict[str, object] = {
+            "event_id": event.event_id,
+            "title": event.title,
+            "team": event.team,
+            "number": event.number,
+            "player": event.player,
+            "action": event.action,
+            "period": event.period,
+            "clock": event.clock,
+            "source_seconds": f"{seconds:.3f}",
+            "source_time": runtime.fmt_time(seconds),
+            "aligned_hamming": aligned_score,
+            "raw_source_seconds": f"{raw_seconds:.3f}",
+            "best_hamming": best,
+            "second_hamming": second,
+            "confidence_gap": second - best,
+            "alignment_adjusted": index != raw_index,
+            "adjustment_seconds": f"{seconds - raw_seconds:.3f}",
+            "hamming_regression": aligned_score - best,
+            "location_status": "blocked" if reasons else "accepted",
+            "anomaly_reasons": ";".join(reasons),
+        }
+        rows.append(row)
+        if reasons:
+            blockers.append({
+                "event_id": event.event_id,
+                "title": event.title,
+                "player": event.player,
+                "period": event.period,
+                "clock": event.clock,
+                "adjustment_seconds": round(seconds - raw_seconds, 3),
+                "aligned_hamming": aligned_score,
+                "best_hamming": best,
+                "reasons": reasons,
+            })
+
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     with args.output_csv.open("w", encoding="utf-8", newline="") as handle:
         fields = [
             "event_id", "title", "team", "number", "player", "action", "period", "clock",
             "source_seconds", "source_time", "aligned_hamming", "raw_source_seconds",
             "best_hamming", "second_hamming", "confidence_gap", "alignment_adjusted",
+            "adjustment_seconds", "hamming_regression", "location_status", "anomaly_reasons",
         ]
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
-        for event, (index, aligned_score) in zip(events, aligned):
-            raw_index, best, second = best_thumbnail_match(source_hashes, hashes[event.event_id])
-            seconds = index / runtime.HASH_FPS
-            writer.writerow({
-                "event_id": event.event_id,
-                "title": event.title,
-                "team": event.team,
-                "number": event.number,
-                "player": event.player,
-                "action": event.action,
-                "period": event.period,
-                "clock": event.clock,
-                "source_seconds": f"{seconds:.3f}",
-                "source_time": runtime.fmt_time(seconds),
-                "aligned_hamming": aligned_score,
-                "raw_source_seconds": f"{raw_index / runtime.HASH_FPS:.3f}",
-                "best_hamming": best,
-                "second_hamming": second,
-                "confidence_gap": second - best,
-                "alignment_adjusted": index != raw_index,
-            })
-    print(json.dumps({
-        "status": "complete",
+        writer.writerows(rows)
+    audit_path = args.audit_report or args.output_csv.with_name("event-location-audit.json")
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit = {
+        "status": "needs_attention" if blockers else "complete",
         "events": len(events),
+        "accepted_events": len(events) - len(blockers),
+        "blocked_events": len(blockers),
         "source_samples": len(source_hashes),
         "output_csv": str(args.output_csv.resolve()),
-    }, ensure_ascii=False, indent=2))
-    return 0
+        "thresholds": {
+            "max_adjustment_seconds": args.max_adjustment_seconds,
+            "max_hamming_regression": args.max_hamming_regression,
+        },
+        "blockers": blockers,
+    }
+    audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({**audit, "audit_report": str(audit_path.resolve())}, ensure_ascii=False, indent=2))
+    return 2 if blockers else 0
 
 
 if __name__ == "__main__":

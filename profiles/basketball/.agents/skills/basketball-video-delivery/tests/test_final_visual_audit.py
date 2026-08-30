@@ -19,6 +19,18 @@ SPEC.loader.exec_module(audit)
 
 
 class FinalVisualAuditTest(unittest.TestCase):
+    def test_reads_seconds_and_clock_formatted_delete_ranges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            delete_csv = Path(temporary) / "delete.csv"
+            delete_csv.write_text(
+                "start,end,reason\n00:00:05,00:00:10,opening\n20,00:30,wait\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                audit.read_delete_ranges(delete_csv),
+                [(5.0, 10.0, "opening"), (20.0, 30.0, "wait")],
+            )
+
     def test_maps_source_delete_ranges_to_output_seams(self) -> None:
         seams = audit.output_seams([
             (10.0, 20.0, "timeout"),
