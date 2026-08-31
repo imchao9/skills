@@ -8,6 +8,12 @@ description: Deliver a Xiaoqiumi basketball replay to verified local edits and B
 Run this as a resumable delivery pipeline.
 Reuse specialized skills for editing; do not duplicate their algorithms here.
 
+When any personal reel contains the wrong scorer, read
+[references/player-event-ownership-incident.md](references/player-event-ownership-incident.md).
+Freeze downstream delivery and re-audit the full player-event batch before
+resuming; a successful decode or cloud readback does not narrow the incident to
+one file.
+
 ## Required inputs
 
 Collect or infer:

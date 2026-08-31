@@ -21,7 +21,7 @@ output/delivery/                sanitized delivery and sync reports
 | AI review | `ai-review.json` says `approved`; all four quality flags are true; referenced artifacts pass structural checks |
 | acquire | Every replay candidate is classified, every selected segment and the assembled final `.mp4` pass validation, assembled duration matches the selected-duration sum, and no active `.part` remains |
 | pure-cut | Reviewed CSV exists, full output decodes, final contact sheet is visually accepted |
-| player-clips | `matches.csv` and `players.csv` exist, reel count matches players, all reels decode |
+| player-clips | Location and official-stat audits pass; action evidence is fingerprint-bound to the reviewed rendered matches; identity and clock are approved; reel count matches players; all reels decode |
 | team-highlights | One plan/output exists per requested team, plans contain no opponent clips, all reels decode |
 | game-highlight | One 8-10 minute match-wide output represents both teams, decodes fully, and its plan/contact sheet is accepted |
 | commentary | Data claims match normalized JSON, article has at least 600 Chinese characters and four review sections, standalone HTML opens without external assets, and browser-rendered PNG passes visual QA |
@@ -37,6 +37,7 @@ output/delivery/                sanitized delivery and sync reports
 - Upload explicit deliverables, never a broad working directory.
 - Check free space before proxying or rendering.
 - Treat successful command exit as necessary but not sufficient; inspect command output and verify artifacts.
+- Treat one confirmed wrong-player event as a full player-event batch incident; freeze downstream upload and follow `player-event-ownership-incident.md` before resuming.
 - Permit automatic shutdown only after the requested terminal delivery state is complete. `running`, `retrying`, `needs_attention`, and either visual-review waiting state must keep the machine available.
 
 ## Resume decision

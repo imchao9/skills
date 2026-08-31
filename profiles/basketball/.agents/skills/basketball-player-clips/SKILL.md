@@ -7,6 +7,12 @@ description: Generate basketball player event clips and reels from a full replay
 
 Use this skill to remake event clips from a source replay when metadata or existing short clips identify candidate events. Metadata and filenames are claims, not identity proof. A personal reel is deliverable only after location, official-stat, and action-frame gates all pass.
 
+When a user reports a wrong scorer, a shifted timestamp was manually accepted,
+or the locator produced widespread adjustments, read
+[the player-event ownership incident](../basketball-video-delivery/references/player-event-ownership-incident.md)
+and apply its full-batch incident response. One confirmed bad event invalidates
+the current player-event batch; repairing only that reel is insufficient.
+
 ## Non-negotiable gates
 
 1. `event-location-audit.json` must be `complete`. Any alignment shifted by more than 30 seconds or whose aligned hash is over 128 bits worse than the raw best match is `blocked`; do not render it automatically.
@@ -67,6 +73,7 @@ python3 "$SKILL_DIR/scripts/make_condensed_reel.py" \
 
 - Treat unlabeled output as `raw_intermediate` only. Use `--raw-no-overlay` solely for diagnostics; never deliver or upload it.
 - Verify every made-basket action evidence frame; early/middle/late sampling is insufficient for player identity.
+- Treat a still frame as reviewable evidence only when it shows the action clearly. If the finish or scorer is ambiguous, inspect multiple frames or the short clip and keep identity approval false.
 - Treat filename labels as event metadata, not visual proof. If a specific clip looks wrong, inspect the generated `reports/matches.csv` row and the event frame.
 - High visual-hash scores can happen on repeated empty-court or similar half-court scenes. Any blocked locator row stops the full batch; never approve it merely because monotonic order looks plausible.
 - Keep all old clips intact. Write remade clips to a new output directory.

@@ -14,6 +14,7 @@ metadata:
 1. Inventory clips before editing. Parse team, jersey number, player, event type, period, clock/timestamp, source path, and duration into a JSON plan.
    Stop with an actionable error when no clip matches the filename contract or the requested team has no parsed clips.
    When the source is a player-event pipeline, also require passed location/stat audits and action evidence fingerprint-bound to the exact reviewed matches CSV. Do not build from an older, manually edited, or unaudited CSV.
+   If any upstream clip has a wrong scorer or unexplained timestamp shift, read [the player-event ownership incident](../basketball-video-delivery/references/player-event-ownership-incident.md), stop the build, and invalidate the full upstream batch rather than deleting the visible bad clip from the highlight plan.
 2. Filter to the requested team first. Keep opponent clips out unless the user explicitly asks for both teams.
 3. Exclude unusable clips early: missing scoreboard, pause screens, duplicate replays, wrong team, or stale quarter-transition frames.
 4. De-duplicate same-possession clips with a small clock window. Prefer made shots, then blocks/steals, then assists; apply a player bonus when the user asks for more of one player.
