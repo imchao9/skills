@@ -1,0 +1,6 @@
+interface:
+  display_name: "目标交付编排"
+  short_description: "围绕已明确目标安排模型、批次、集成门禁与验收"
+  default_prompt: "使用 $orchestrate-goal-delivery 围绕目标安排模型、依赖批次、集成和基于证据的验收收口。"
+policy:
+  allow_implicit_invocation: true
