@@ -48,7 +48,9 @@
 `design-an-interface`、`qa`、`request-refactor-plan` 和 `ubiquitous-language` 仍保留在 `profiles/mattpocock-skills` 的上游镜像中，但不进入 `global-runtime`。
 它们位于 matt 上游的 deprecated 分组；如需恢复到运行态，必须重新说明使用场景并人工评估。
 
-`profiles/mattpocock-skills` 当前基于 upstream commit `84fdeffd12f2ee307994d1eb6feb48173b6e0502`。
+`profiles/mattpocock-skills` 当前基于 upstream commit `d81f3a183412e71a5b1e84ca21bc1a35eea03a60`。
+
+2026-10-04 live check：Matt Pocock `d81f3a183412e71a5b1e84ca21bc1a35eea03a60` 与 Agent Reach `a19a171fa980a0785849596492e0af4db800c82f` 已在隔离 worktree 刷新并同步到候选 global-runtime；EveryInc `9af474a70e7f2a844338519ad9e92aafbd92d4fb` 仅刷新 experimental `ce-compound`，未进入运行态。Codemao 两个 GitLab SSH 源超时，Video Shotcraft GitHub source 返回 404，均未宣称当前 revision。
 2026-08-12 按用户确认改为完整跟随：来源 profile 当前提供的 35 个 skill 已全部同步到运行态；`ask-matt`、`grilling`、`wizard` 不再保留本地 fork，`wait-what`、`writing-for-agents` 已晋级全局。上游已移除且没有本地 fork 的 `batch-grill-me`、`edit-article`、`writing-great-skills` 继续不在运行态。`obsidian-vault` 是上游已移除后的本地维护 skill，不属于当前 Matt 来源清单，继续按其独立 `local-fork` 策略保留。
 
 如果一个运行态 skill 不属于上述来源族，先通过 Git 历史和真实来源补充记录，再执行升级。

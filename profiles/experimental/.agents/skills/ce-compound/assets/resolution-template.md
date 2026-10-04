@@ -17,12 +17,13 @@ date: [YYYY-MM-DD]
 category: [solutions subdirectory]
 module: [Module or area]
 problem_type: [schema enum]
-component: [schema enum]
+component: [corpus value, else schema suggested default]
 symptoms:
   - [Observable symptom 1]
-root_cause: [schema enum]
+root_cause: [corpus value, else schema suggested default]
 resolution_type: [schema enum]
 severity: [schema enum]
+retire_when: [optional; the outside change that would retire this doc and how to check for it, else omit this line]
 tags: [keyword-one, keyword-two]
 ---
 
@@ -54,7 +55,7 @@ tags: [keyword-one, keyword-two]
 
 ## Knowledge Track Template
 
-Use for: `best_practice`, `documentation_gap`, `workflow_issue`, `developer_experience`
+Use for: `best_practice`, `documentation_gap`, `workflow_issue`, `developer_experience`, `architecture_pattern`, `design_pattern`, `tooling_decision`, `convention`
 
 <!-- YAML safety: array items (symptoms, applies_when, tags, related_components) starting with ` [ * & ! | > % @ ? or containing ": " must be wrapped in double quotes. See references/yaml-schema.md > "YAML Safety Rules". -->
 
@@ -65,10 +66,11 @@ date: [YYYY-MM-DD]
 category: [solutions subdirectory]
 module: [Module or area]
 problem_type: [schema enum]
-component: [schema enum]
+component: [corpus value, else schema suggested default]
 severity: [schema enum]
 applies_when:
   - [Condition where this applies]
+retire_when: [optional; the outside change that would retire this doc and how to check for it, else omit this line]
 tags: [keyword-one, keyword-two]
 ---
 

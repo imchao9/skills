@@ -54,7 +54,7 @@
       "source": "everyinc/compound-engineering-plugin",
       "sourceType": "github",
       "skillPath": "skills/ce-compound/SKILL.md",
-      "computedHash": "36154e618aead67465916fedbcfbcfaaf1ed10f2240b96ad4c9966d7d749af7d"
+      "computedHash": "7d6658d98dfee0745d8aa36b3b2a6974b2ba298371b7e10d1f5f0fd17df90a74"
     },
     "dingtalk-mcp-enhancer": {
       "source": "../../../../../Downloads/dingtalk-mcp-enhancer",
@@ -90,7 +90,7 @@
       "computedHash": "526877a25f05d0b24d5b1a86413595b196e12affb83be7c50992f90d63596c76"
     },
     "install-codex-auth-sync": {
-      "source": "/Users/cm/Documents/Me/Project/01_active-repos/codex_config_update/packaging/cliproxy-local/skills/install-codex-auth-sync",
+      "source": "../../../../../../Documents/Me/Project/01_active-repos/codex_config_update/packaging/cliproxy-local/skills/install-codex-auth-sync",
       "sourceType": "local",
       "computedHash": "3e9acafd43e05f9fe9c5af5d124a348ea646d1079c4f845fcdd9967c6ea64f22"
     },
