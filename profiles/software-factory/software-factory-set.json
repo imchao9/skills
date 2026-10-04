@@ -1,0 +1,54 @@
+{
+  "name": "software-factory",
+  "version": 1,
+  "description": "A small default set for requirements, architecture, implementation, verification, and delivery.",
+  "pstack": {
+    "repository": "https://github.com/cursor/plugins",
+    "path": "pstack",
+    "commit": "e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a",
+    "role": "orchestration-methods"
+  },
+  "matt": {
+    "repository": "https://github.com/mattpocock/skills",
+    "commit": "d81f3a183412e71a5b1e84ca21bc1a35eea03a60",
+    "role": "planning-and-engineering-methods"
+  },
+  "skills": [
+    {"name": "software-factory", "source_profile": "global-runtime", "source_path": "software-factory", "role": "router-and-ledger"},
+    {"name": "grill-with-docs", "source_profile": "mattpocock-skills", "source_path": "grill-with-docs", "role": "requirements-alignment"},
+    {"name": "domain-modeling", "source_profile": "mattpocock-skills", "source_path": "domain-modeling", "role": "domain-and-ADR"},
+    {"name": "codebase-design", "source_profile": "mattpocock-skills", "source_path": "codebase-design", "role": "architecture"},
+    {"name": "to-spec", "source_profile": "mattpocock-skills", "source_path": "to-spec", "role": "specification"},
+    {"name": "to-tickets", "source_profile": "mattpocock-skills", "source_path": "to-tickets", "role": "vertical-slice-plan"},
+    {"name": "implement", "source_profile": "mattpocock-skills", "source_path": "implement", "role": "implementation"},
+    {"name": "implement-spec", "source_profile": "mattpocock-skills", "source_path": "implement-spec", "role": "multi-unit-execution"},
+    {"name": "tdd", "source_profile": "mattpocock-skills", "source_path": "tdd", "role": "behavioral-tests"},
+    {"name": "diagnosing-bugs", "source_profile": "mattpocock-skills", "source_path": "diagnosing-bugs", "role": "bug-investigation"},
+    {"name": "code-review", "source_profile": "mattpocock-skills", "source_path": "code-review", "role": "independent-review"},
+    {"name": "pr", "source_profile": "mattpocock-skills", "source_path": "pr", "role": "delivery-evidence"}
+  ],
+  "packs": {
+    "frontend": [
+      {"name": "frontend-delivery-workflow", "source_profile": "experimental", "source_path": "frontend-delivery-workflow", "role": "frontend-delivery"},
+      {"name": "draw-ui", "source_profile": "experimental", "source_path": "draw-ui", "role": "ui-implementation"},
+      {"name": "huashu-design", "source_profile": "experimental", "source_path": "huashu-design", "role": "visual-design"},
+      {"name": "vitest-midscene-e2e", "source_profile": "vendor-lab", "source_path": "vitest-midscene-e2e", "role": "browser-e2e"}
+    ],
+    "backend-java": [
+      {"name": "java-backend-code-review", "source_profile": "codemao", "source_path": "java-backend-code-review", "role": "java-review"},
+      {"name": "java-backend-knowledge-base", "source_profile": "codemao", "source_path": "java-backend-knowledge-base", "role": "java-domain-knowledge"}
+    ],
+    "backend-codemao": [
+      {"name": "codemao-troubleshoot", "source_profile": "codemao", "source_path": "codemao-troubleshoot", "role": "service-diagnosis"},
+      {"name": "crp-deploy", "source_profile": "codemao", "source_path": "crp-deploy", "role": "crp-delivery"}
+    ],
+    "testing": [
+      {"name": "ai-intelligent-test", "source_profile": "codemao", "source_path": "ai-intelligent-test", "role": "test-design-and-execution"},
+      {"name": "vitest-midscene-e2e", "source_profile": "vendor-lab", "source_path": "vitest-midscene-e2e", "role": "browser-e2e"}
+    ],
+    "research": [
+      {"name": "agent-reach", "source_profile": "web", "source_path": "agent-reach", "role": "web-research"},
+      {"name": "grok-research", "source_profile": "experimental", "source_path": "grok-research", "role": "evidence-search"}
+    ]
+  }
+}

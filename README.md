@@ -38,6 +38,7 @@ profiles/ppt-lab/             # PPT skill 实验候选
 profiles/web/                 # 正式联网入口，目前只保留 agent-reach
 profiles/web-lab/             # Firecrawl / XCrawl / browser-use 等实验候选
 profiles/mattpocock-skills/   # 来自 mattpocock/skills 的外部 skill
+profiles/software-factory/ # 软件构建工作流组合 profile
 profiles/codemao/             # 公司 GitLab 内源 skill
 profiles/vendor-lab/          # EveryInc / GitHub 大佬 / 开源 vendor 候选
 profiles/rtk-candidates/      # RTK 本地候选，未确认是否长期保留

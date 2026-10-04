@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "skills": {
+    "software-factory": {
+      "source": "imchao9/skills",
+      "ref": "working-tree",
+      "sourceType": "local",
+      "skillPath": "profiles/global-runtime/.agents/skills/software-factory/SKILL.md"
+    },
+    "grill-with-docs": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/grill-with-docs/SKILL.md",
+      "computedHash": "35e62aa423aaeab6a414bcac273f56dfb17802ef2334b41b6a3b00f28196c8cf"
+    },
+    "domain-modeling": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/domain-modeling/SKILL.md",
+      "computedHash": "b3eb40152b81f0c98fd2095a023c019452dbdce56f7540cc67fece2972db8369"
+    },
+    "codebase-design": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/codebase-design/SKILL.md",
+      "computedHash": "b2888e4f4e8c0af3bfd557575a64b905c44e6248c3101d72077816882b3a92b9"
+    },
+    "to-spec": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/to-spec/SKILL.md",
+      "computedHash": "3fa1a0695d4ea242fae9e569e4d22aa1788623197abb33bfadafae7315789bbf"
+    },
+    "to-tickets": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/to-tickets/SKILL.md",
+      "computedHash": "bf5e6ebcb4f1272de0c188d5b3901f265a03d1fa9935a21a7a56938e21e2e761"
+    },
+    "implement": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/implement/SKILL.md",
+      "computedHash": "2139cfedf24791adbc839aaab6019cff158af1e28bfead020ec6e0ce01b3e74d"
+    },
+    "implement-spec": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/implement-spec/SKILL.md",
+      "computedHash": "f0db7dafd236fff9dc40da566cb72bbad6802674f64617b06959b00a436c7d5b"
+    },
+    "tdd": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/tdd/SKILL.md",
+      "computedHash": "9ce12c4a1e209e557fcf9d02086ade3d7ffdb976186018fc1b063b4164246004"
+    },
+    "diagnosing-bugs": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/diagnosing-bugs/SKILL.md",
+      "computedHash": "b35c6a6e37c61ca3169532fbab2300dea26f2ad190e1d2dac065800b8b2bb0aa"
+    },
+    "code-review": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/code-review/SKILL.md",
+      "computedHash": "caa9a086baaf9e0f7cd71f64edfa83da6821c05e826b083221f3d02e3d6a1905"
+    },
+    "pr": {
+      "source": "mattpocock/skills",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/pr/SKILL.md",
+      "computedHash": "22a15d4d469344b38e03eb0e95772478393975836289393b1bad3c0febcdc679"
+    },
+    "frontend-delivery-workflow": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/frontend-delivery-workflow/SKILL.md",
+      "computedHash": "f96539b3c22d8c4e00e1f93ba0ae3a03fe4f5ddfd0c57a3d3a34f768997bab39"
+    },
+    "draw-ui": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/draw-ui/SKILL.md",
+      "computedHash": "1a49e22efc462610af9d38c0da79f41feaa843eb3f6854717f2c667038e3fece"
+    },
+    "huashu-design": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/huashu-design/SKILL.md",
+      "computedHash": "526877a25f05d0b24d5b1a86413595b196e12affb83be7c50992f90d63596c76"
+    },
+    "vitest-midscene-e2e": {
+      "source": "web-infra-dev/midscene-skills",
+      "ref": "6a7496f43137efbba9f2391ac6d694e89aa439f2",
+      "sourceType": "github",
+      "skillPath": "skills/vitest-midscene-e2e/SKILL.md",
+      "computedHash": "187bc65ad025075bf48c82dbc679b08ddbc0c7d13aec068f2dac874807856860"
+    },
+    "java-backend-code-review": {
+      "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
+      "ref": "working-tree",
+      "sourceType": "git",
+      "skillPath": "java-backend-code-review/SKILL.md",
+      "computedHash": "8dc45fa8800ea9a511a3c870dae2d89263af8ef7dc6e1a60d5b50bc527219322"
+    },
+    "java-backend-knowledge-base": {
+      "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
+      "ref": "working-tree",
+      "sourceType": "git",
+      "skillPath": "java-backend-knowledge-base/SKILL.md",
+      "computedHash": "15ed7fcd5c7be587abeeec63f198c75183c8ade25b5a0b632c536dcf2af802b2"
+    },
+    "codemao-troubleshoot": {
+      "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
+      "ref": "working-tree",
+      "sourceType": "git",
+      "skillPath": "codemao-troubleshoot/SKILL.md",
+      "computedHash": "6060c0b197eaed472e2d1038725496160d9090ca1acbc9ea95c72ba0b38ea2be"
+    },
+    "crp-deploy": {
+      "source": "git@gitlab.codemao.cn:backend/platform-informatization/tool/skills.git",
+      "ref": "working-tree",
+      "sourceType": "git",
+      "skillPath": "crp-deploy/SKILL.md",
+      "computedHash": "1121d5f96f22cd1d5e9530f27b0b0d0c55ee8227136c76d9f9aebaeddcfd8ebd"
+    },
+    "ai-intelligent-test": {
+      "source": "/Users/cm/Documents/Me/Skills/profiles/codemao/.agents/skills/ai-intelligent-test",
+      "ref": "working-tree",
+      "sourceType": "local",
+      "skillPath": "profiles/codemao/.agents/skills/ai-intelligent-test/SKILL.md",
+      "computedHash": "68db3a3c62d73082d1d0fefa5ec19546b6b9184f0a635058c244b97807c711cc"
+    },
+    "agent-reach": {
+      "source": "Panniantong/agent-reach",
+      "ref": "working-tree",
+      "sourceType": "github",
+      "skillPath": "agent_reach/skill/SKILL.md",
+      "computedHash": "ac515588e5e46388039d86e388c03f718735aea33cba53901c900e7cb6be901f"
+    },
+    "grok-research": {
+      "source": "imchao9/skills",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "profiles/experimental/.agents/skills/grok-research/SKILL.md",
+      "computedHash": "62dc71b5e960ee1f923a4f6677c3a1d232deaa96e91de61210cdd0ac8a6e50d0"
+    }
+  }
+}

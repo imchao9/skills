@@ -1,0 +1,4 @@
+interface:
+  display_name: "CRP Deploy"
+  short_description: "CRP build, test submission, release, deploy"
+  default_prompt: "Use $crp-deploy for CRP build, test submission, release, deploy. For test deployment, default to workflow-deploy-test. Resolve requirement/module ambiguity from candidates. After async start, summarize status and always tell the user they can ask you to check progress by run_id. Read references/auth.md on auth failure."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Intelligent Test"
+  short_description: "从任意项目调用内部 AI Test 工作流与执行框架"
+  default_prompt: "Use $ai-intelligent-test to plan and run the appropriate AI Test workflow for this project."

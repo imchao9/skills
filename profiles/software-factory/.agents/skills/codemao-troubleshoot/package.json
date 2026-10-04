@@ -1,0 +1,19 @@
+{
+  "name": "codemao-troubleshoot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test $(find scripts/tests -maxdepth 1 -name '*.test.js' ! -name '*-live.test.js' | sort)",
+    "test:live": "node --test $(find scripts/tests -maxdepth 1 -name '*-live.test.js' | sort)",
+    "test:auth-live": "CODEMAO_AUTH_LIVE=1 node --test --test-concurrency=1 $(find scripts/tests -maxdepth 1 -name '*-live.test.js' | sort)",
+    "setup:check": "scripts/skillctl setup --check",
+    "setup:install": "scripts/skillctl setup --install"
+  },
+  "dependencies": {
+    "mongodb": "^5.9.2",
+    "mysql2": "^3.22.5",
+    "playwright": "^1.56.1",
+    "redis": "^6.0.0"
+  }
+}

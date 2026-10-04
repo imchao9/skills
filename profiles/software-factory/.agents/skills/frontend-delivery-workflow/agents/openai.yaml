@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontend Delivery Workflow"
+  short_description: "覆盖前端规划、实现、调试、接口联调、视觉验收与回归检查"
+  default_prompt: "Use $frontend-delivery-workflow to plan, implement, debug, and verify this frontend change."

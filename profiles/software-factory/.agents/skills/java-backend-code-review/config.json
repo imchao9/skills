@@ -1,0 +1,7 @@
+{
+  "memory_scope": "global",
+  "auto_log_candidates": true,
+  "adoption_mode": "explicit",
+  "store_path": "data/review-findings.jsonl",
+  "line_bucket_size": 20
+}

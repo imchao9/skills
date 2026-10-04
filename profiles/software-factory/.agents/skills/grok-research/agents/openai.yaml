@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grok Research"
+  short_description: "通过 OpenCLI 调用 Grok 检索 X 和 YouTube 来源"
+  default_prompt: "Use $grok-research to query Grok through OpenCLI and investigate this topic across X and YouTube with original links."

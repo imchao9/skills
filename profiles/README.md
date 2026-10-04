@@ -35,6 +35,7 @@ Git source 只包含已经推送到 GitHub 的内容。
 | `web` | 正式联网入口，目前只保留 `agent-reach` |
 | `web-lab` | Firecrawl / XCrawl / browser-use 等实验候选 |
 | `mattpocock-skills` | 来自 `mattpocock/skills` 的外部 skill |
+| `software-factory` | 需求、架构、实现、验证、交付的组合 profile |
 | `codemao` | 公司 GitLab 内源 skill |
 | `vendor-lab` | EveryInc、GitHub 大佬和其它开源 vendor 候选 |
 | `rtk-candidates` | RTK 本地候选 skill |
@@ -64,6 +65,11 @@ Lock 是 profile 级 `skills-lock.json`，不是每个 skill 一个 `skill.lock`
 - `experimental`
 
 自研 profile 可以没有 lock，因为这个仓库本身就是源。
+
+组合 profile 可以额外维护 manifest，声明每个 Skill 的来源 profile、来源路径和职责；例如
+`profiles/software-factory/software-factory-set.json`。manifest 决定组合成员，`skills-lock.json`
+记录安装来源和完整性。组合目录本地共研时可以由 manifest 生成特定 Skill 的相对软链，提交或通过
+Git source 发布前应生成实体文件。
 
 ## 查看某个 Profile 包含什么
 
