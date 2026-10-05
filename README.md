@@ -6,6 +6,9 @@
 默认从这个 GitHub 仓库安装某个 profile，让目标项目生成自己的 `.agents/skills` 和 `skills-lock.json`。
 本地路径和软链只用于本机开发、调试或临时验证。
 
+Skill Atlas 管理客户端是独立仓库，当前本机工作树为
+`/Users/cm/Documents/Me/skills-manager-client`。它通过 `SKILLS_ROOT` 扫描本仓库，客户端代码、Electron 打包和运行态数据不再放在这里。
+
 ## 目录
 
 ```text
