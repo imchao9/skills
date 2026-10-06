@@ -11,7 +11,7 @@
 这里放当前全局可用、稳定启用的 skill。
 不要把实验候选、一次性项目 skill、或还没评估过的外部仓库直接放进这里。
 
-新增来源时先进入更具体的 profile 或 `experimental`。
+新增自创 Skill 时先进入仓库根目录 `skills/`；新增外部来源时先进入更具体的来源 profile 或 `experimental`。
 确认长期复用后，再同步到 `global-runtime`。
 
 外部来源 skill 的 canonical source、本地 fork 和升级策略记录在 `UPSTREAM.md`。

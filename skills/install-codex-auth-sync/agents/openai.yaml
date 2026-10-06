@@ -1,0 +1,4 @@
+interface:
+  display_name: "安装 Codex 认证同步"
+  short_description: "在远端 Intel 或 Apple 芯片 Mac 安装认证同步 Agent"
+  default_prompt: "使用 $install-codex-auth-sync 在这台 Mac 安装认证同步 Agent，并验证设备注册状态。"

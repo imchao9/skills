@@ -2,7 +2,7 @@
 默认使用简体中文回复；用户明确要求时再切换。
 
 # 项目定位
-这个仓库是个人 `.agents` profile 仓库，真正的安装态放在 `profiles/<profile>/.agents/skills/`。
+这个仓库是个人自创 Skill 的 canonical Git 仓库。自创 Skill 的源文件统一放在根目录 `skills/<skill-name>/`，每个目录都是独立安装单元。`profiles/<profile>/.agents/skills/` 保存来源副本、组合 profile 或运行态快照；外部或公司 Skill 如果出现在这里，会按来源隔离并保留来源证据，不因此转为自创 Skill。
 
 后续业务项目默认不要手工复制 skills，也不要直接依赖本机路径；应从本仓库的 GitHub source 安装对应 profile：
 
@@ -21,7 +21,7 @@ profile 之间不以软链代替来源审查和晋级同步。
 根目录 `.agents` 只是默认 profile 的 alias：`.agents -> profiles/core/.agents`。
 
 # Profile 语义
-- `profiles/core`：默认最小集，只放稳定自研或长期自维护 skill。
+- `profiles/core`：默认最小安装集合，成员从根目录 `skills/` 和来源 profile 选择。
 - `profiles/global-runtime`：本机 `~/.agents/skills` 的真相源，只放当前全局可用的稳定 skill。
 - `profiles/ppt`：正式 PPT / HTML 演示稿生产链路；实验候选放 `profiles/ppt-lab`。
 - `profiles/web`：正式联网入口，目前只保留 `agent-reach`；其它抓取/浏览器实现放 `profiles/web-lab`。
@@ -34,7 +34,11 @@ profile 之间不以软链代替来源审查和晋级同步。
 - 不再使用 `profiles/all`，避免把“默认集”变成所有东西的混装目录。
 
 # Skill 安装
+
+自创 Skill 先在根目录 `skills/<skill-name>/` 中创建和维护，再从已经提交并推送的 Git source 分发到其它项目。目标项目的 `.agents/skills` 和本机 `~/.agents/skills` 都是安装态，不是自创 Skill 的维护入口。
+
 外部来源使用 Vercel `skills` CLI 安装到 profile 内的 `.agents/skills/`。
+自创 Skill 按单个目录安装，不把仓库根目录或 `skills/` 整体当成一个 Skill 包。
 Git 跟踪复制后的 skill 文件；不把 `skills-lock.json` 当本仓库维护入口。
 但外部或公司来源 profile 必须保留 profile 级 `skills-lock.json` 作为来源清单，例如 `profiles/mattpocock-skills`、`profiles/codemao`、`profiles/vendor-lab` 和 `profiles/experimental`。
 其它业务项目应从 `imchao9/skills/profiles/<profile>` 这个 Git source 安装，目标项目自己的 `skills-lock.json` 记录 Git 来源。
@@ -72,6 +76,6 @@ x-source-note: local project-specific skill; original source not fully confirmed
 - 全局 `~/.agents/skills` 由 `profiles/global-runtime/.agents/skills` 生成或软链提供，不要手改。
 - 在这个仓库里安装时使用 `--copy`，因为本仓库直接跟踪安装后的 skill 文件。
 - 不要把类型目录放进 `.agents/skills/` 下面；agent 运行时保持 `.agents/skills/<skill-name>/SKILL.md` 的扁平结构。
-- 不引入 CStack 的 `role / workflow / pack / preset / doctor / sync` 体系；这个仓库只保存可被 Git source 安装复用的 `.agents`。
+- 不引入 CStack 的 `role / workflow / pack / preset / doctor / sync` 体系；这个仓库只保存可被 Git source 独立安装复用的 Skill 和 profile 来源。
 - 不新增脚本、CLI、manifest 或 source registry；需要安装时直接跑 Vercel CLI，装完提交 Git。
 - 本机代理可能影响 npm/GitHub 请求；运行 Vercel CLI 时优先临时清掉 `http_proxy`、`https_proxy`、`all_proxy`。

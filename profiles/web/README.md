@@ -2,6 +2,8 @@
 
 这个 profile 是正式联网入口，目前只保留：
 
+本 profile 中的自建 Skill 以仓库根目录 `skills/` 为源，外部联网 Skill 继续按表格中的来源管理。
+
 | Skill | 来源 | 说明 |
 |---|---|---|
 | `agent-reach` | `Panniantong/agent-reach` | 多平台搜索、网页阅读、GitHub、社交平台调研的路由器 |

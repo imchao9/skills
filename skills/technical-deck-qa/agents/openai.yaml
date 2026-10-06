@@ -1,0 +1,4 @@
+interface:
+  display_name: "Technical Deck QA"
+  short_description: "Review generated technical decks"
+  default_prompt: "Use $technical-deck-qa to review this generated technical deck against the provided screenshots and reference style."

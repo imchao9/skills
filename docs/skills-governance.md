@@ -1,26 +1,31 @@
 # Skills Governance
 
-本文固定个人 skills 的来源分层、晋级规则和全局运行态维护方式。
+本文固定个人自创 Skill 的仓库边界、来源分层、晋级规则和全局运行态维护方式。
 
 目标是避免把 GitHub 仓库、公司 GitLab 仓库、Codex plugins 和本地自维护 skill 混成一个不可追踪的全局目录。
 
-## 三层模型
+`/Users/cm/Documents/Me/skills` 是个人自创 Skill 的 canonical Git 仓库。自创 Skill 的源文件统一放在根目录 `skills/<skill-name>/`，每个目录都是独立安装单元。外部或公司 Skill 可以作为按来源隔离的 profile 导入副本保存在同一仓库，但它们仍以原始来源为准，不转化为自创 Skill。
+
+## 四层模型
 
 第一层是 `~/.agents/skills`。
 这是运行态，只放当前全局可用的稳定 skill。
 它不手改，当前软链到 `/Users/cm/Documents/Me/skills/profiles/global-runtime/.agents/skills`。
 
-第二层是 `/Users/cm/Documents/Me/skills/profiles/*/.agents/skills`。
-这是个人真相源，按用途、来源和成熟度分 profile。
-Git 跟踪复制后的 skill 文件，升级靠重新安装或重新导入后看 diff。
+第二层是 `/Users/cm/Documents/Me/skills/skills`。
+这是自创 Skill 的唯一 canonical source。每个子目录是一个独立安装单元，根目录本身不是一个需要整体安装的 Skill 包。
 
-第三层是 Codex plugins。
+第三层是 `/Users/cm/Documents/Me/skills/profiles/*/.agents/skills`。
+这是来源副本、组合 profile 和运行态快照的目录。外部或公司 profile 保留导入副本和来源证据；自创 Skill 在这里的副本不改变根目录 `skills/` 的 canonical ownership。
+
+第四层是 Codex plugins。
 插件不是 skill，不纳入 `.agents/skills`。
+Git 跟踪复制后的 profile 文件，升级靠重新安装或重新导入后看 diff。
 插件用 `codex plugin list`、marketplace 和版本号单独记录。
 
 ## Profile 语义
 
-`profiles/core` 只放稳定自研或长期自维护的最小集。
+`profiles/core` 是默认最小安装集合，成员可以来自根目录 `skills/` 或来源 profile。
 
 `profiles/global-runtime` 是本机 `~/.agents/skills` 的真相源。
 
@@ -48,9 +53,9 @@ GitHub 个人或 vendor 仓库先进入 `profiles/vendor-lab`，除非它明显�
 
 `mattpocock/skills` 继续只进入 `profiles/mattpocock-skills`。
 
-本地自研 skill 先进入最贴近的专业 profile 或 `profiles/experimental`。
+本地自研 Skill 先进入根目录 `skills/`。成熟度和场景归属记录在对应 profile；尚未确认的候选可以继续留在原 profile 或 `profiles/experimental`，但不作为根目录 canonical source。
 
-只有确认长期复用、触发边界稳定、没有明显重复时，才晋级到 `profiles/core` 或 `profiles/global-runtime`。
+只有确认长期复用、触发边界稳定、没有明显重复时，才把它加入 `profiles/core` 或 `profiles/global-runtime` 的安装快照。
 
 ## 晋级到全局的标准
 
@@ -93,9 +98,18 @@ Lock 是 profile 级文件，文件名是 `skills-lock.json`。
 
 `profiles/vendor-lab` 即使暂时为空，也保留空 lock，表示这是一个等待接入 vendor skill 的受管 profile。
 
-自研 profile 可以没有 lock，因为当前 Git 仓库本身就是源。
+根目录 `skills/` 可以没有 profile 级 lock，因为当前 Git 仓库本身就是源。profile 中的自创 Skill 副本不作为源。
 
 业务项目从 `imchao9/skills/profiles/<profile>` 安装后，也应该提交目标项目自己的 `skills-lock.json`。
+
+自创 Skill 从根目录按单个 Skill 安装，不把仓库整体作为一个安装单元：
+
+```bash
+env -u http_proxy -u https_proxy -u all_proxy \
+  npx --yes skills@latest add \
+  https://github.com/imchao9/skills/tree/main/skills/<skill-name> \
+  --agent codex --copy --yes
+```
 
 ## 项目使用规则
 

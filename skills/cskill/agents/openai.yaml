@@ -1,0 +1,4 @@
+interface:
+  display_name: "CSkill"
+  short_description: "用 CAtlas CLI 发现、安装、升级和移动 Skill"
+  default_prompt: "使用 $cskill 通过 CAtlas CLI 搜索、安装、升级或移动 Skill。"

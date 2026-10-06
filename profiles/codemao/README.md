@@ -2,6 +2,8 @@
 
 公司 GitLab 内源 skill 的隔离 profile。
 
+本 profile 中带有 `x-provenance: local` 的 Skill 以仓库根目录 `skills/` 为源；其余未标记成员继续按公司 GitLab 来源管理。
+
 这些 skill 先在这里管理和评估，不直接灌进全局运行态。
 
 ## 来源

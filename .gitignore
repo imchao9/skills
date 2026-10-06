@@ -1,10 +1,12 @@
 .DS_Store
 debug/
 .skill-manager/
-/skills/
 skills-lock.json
 !profiles/*/skills-lock.json
 profiles/*/.agents/skills/*.zip
+skills/*/data/
+skills/*/output/
+skills/*/.env
 node_modules/
 *.pyc
 __pycache__/

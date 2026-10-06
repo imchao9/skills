@@ -1,0 +1,4 @@
+interface:
+  display_name: "Basketball Highlight Builder"
+  short_description: "Build basketball highlight reels with labels"
+  default_prompt: "Use $basketball-highlight-builder to create a trimmed, ordered, labeled basketball highlight video from event clips."

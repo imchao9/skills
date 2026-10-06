@@ -1,9 +1,9 @@
 # Personal Skills
 
-这个仓库只做一件事：按 profile 保存可直接复用的 `.agents` 目录。Git 就是版本管理，Vercel `skills` CLI 只是安装器。
+这个仓库是个人自创 Skill 的 canonical Git 仓库。自创 Skill 统一放在根目录 `skills/<skill-name>/`，每个目录都是独立安装单元。`profiles/` 保存来源副本、组合说明和运行态快照。外部或公司 Skill 如果出现在这里，会按来源隔离并保留来源证据，不因此转为自创 Skill。Git 就是版本管理，Vercel `skills` CLI 只是安装器。
 
 其他项目不需要初始化命令、不需要角色/pack/preset，也不需要 CStack 那套装配关系。
-默认从这个 GitHub 仓库安装某个 profile，让目标项目生成自己的 `.agents/skills` 和 `skills-lock.json`。
+默认从这个 GitHub 仓库安装某个 profile 或根目录下的单个 Skill，让目标项目生成自己的 `.agents/skills` 和 `skills-lock.json`。
 本地路径和软链只用于本机开发、调试或临时验证。
 
 Skill Atlas 管理客户端是独立仓库，当前本机工作树为
@@ -24,17 +24,21 @@ profiles/
         <skill-name>/
           SKILL.md
 
+skills/
+  <skill-name>/
+    SKILL.md
+
 .agents -> profiles/core/.agents
 ```
 
-`profiles/core` 是当前默认 profile，只放稳定、确定自研或长期自维护的核心 skill。根目录 `.agents` 只是一个方便入口，指向 `profiles/core/.agents`。
+`skills/` 是自创 Skill 的唯一源目录。`profiles/core` 是当前默认安装集合，根目录 `.agents` 仍是本机兼容入口，指向 `profiles/core/.agents`。
 `profiles/global-runtime` 是本机全局运行态的真相源。
 `~/.agents/skills` 软链到 `profiles/global-runtime/.agents/skills`，不要手动维护全局目录里的文件。
 
 ## Profile 分层
 
 ```text
-profiles/core/                # 默认最小集，稳定自研核心
+profiles/core/                # 默认最小安装集合
 profiles/global-runtime/      # 本机 ~/.agents/skills 的真相源
 profiles/ppt/                 # 正式 PPT / HTML 演示稿生产链路
 profiles/ppt-lab/             # PPT skill 实验候选
@@ -128,7 +132,7 @@ Git source 只会看到已经提交并推送到 GitHub 的内容。
 本地未提交或未推送的 profile 变化，不会被其它项目安装到。
 
 Lock 是 profile 级 `skills-lock.json`，不是每个 skill 一个 `skill.lock`。
-外部或公司来源 profile 需要保留 lock；自研 profile 可以没有 lock。
+外部或公司来源 profile 需要保留 lock；根目录 `skills/` 作为自创 Skill 源目录不需要 profile 级 lock。
 
 ### 方式二：软链复用
 
@@ -221,7 +225,7 @@ env -u http_proxy -u https_proxy -u all_proxy \
 
 ## 添加新的 Skill
 
-只在这个仓库的某个 profile 里维护 skills，其他项目通过 Git source 安装和升级。
+自创 Skill 只在根目录 `skills/<skill-name>/` 里维护，其他项目按单个 Skill 或选定的多个 Skill 通过 Git source 安装和升级。目标项目和本机运行态中的复制文件不作为自创 Skill 的源。
 
 ```bash
 cd /Users/cm/Documents/Me/skills/profiles/mattpocock-skills
@@ -240,22 +244,23 @@ env -u http_proxy -u https_proxy -u all_proxy npx --yes skills@latest add mattpo
 env -u http_proxy -u https_proxy -u all_proxy npx --yes skills@latest add <owner>/<repo> --agent codex --skill '*' --yes --copy
 ```
 
-然后提交 `profiles/<profile>/.agents/skills/` 的变化即可。
+然后提交对应来源 profile 的变化即可。
 这里使用 `--copy`，因为本仓库直接跟踪安装后的 skill 文件。
-其它业务项目不读取本机路径，而是从 `imchao9/skills/profiles/<profile>` 安装。
+其它业务项目不读取本机路径，而是从已推送的 Git source 安装。
 
 ## 管理自研 Skill
 
-自己生成或长期维护的 skill 也统一放在这个仓库里管理。正式维护入口是：
+自己生成或长期维护的 Skill 统一放在根目录 `skills/` 管理。这个目录是它们的 canonical source，正式维护入口是：
 
 ```text
-profiles/<profile>/.agents/skills/<skill-name>/
+skills/<skill-name>/
 ```
 
 推荐规则：
 
-- 先放到最相关的专业 profile，例如 PPT 相关放 `profiles/ppt/.agents/skills/`，网页抓取相关放 `profiles/web/.agents/skills/`。
-- 确认会被多个场景长期复用后，再晋级到 `profiles/core/.agents/skills/`、`profiles/global-runtime/.agents/skills/` 或对应正式 profile。
+- 先把 Skill 放到根目录 `skills/<skill-name>/`，再在需要的 profile README 或现有组合配置中记录场景归属。
+- 确认会被多个场景长期复用后，继续保留在 `skills/`，按需加入 `profiles/core` 或 `profiles/global-runtime` 的安装快照。
+- 外部或公司来源的 Skill 继续放在对应来源 profile；这些目录保存导入副本和来源证据，不把它们标记为自创 Skill。
 - 半成品、对比实验、效果截图、调试用例放 `debug/`，不要直接进入正式 profile。
 - 每个正式 skill 至少保留 `SKILL.md`；需要 UI 展示时加 `agents/openai.yaml`；复杂流程再加 `references/`、`scripts/`、`assets/`。
 - `SKILL.md` 只写会改变 agent 行为的流程和规则；详细风格、案例、评分表放到 `references/`。
@@ -265,15 +270,15 @@ profiles/<profile>/.agents/skills/<skill-name>/
 ```bash
 rtk proxy python3 /Users/cm/.codex/skills/.system/skill-creator/scripts/init_skill.py \
   <skill-name> \
-  --path /Users/cm/Documents/me/skills/profiles/<profile>/.agents/skills \
+  --path /Users/cm/Documents/me/skills/skills \
   --resources references,scripts
 ```
 
-创建后用真实 case 跑一遍，把输入、输出和截图放到 `debug/runs/<date>-<slug>/`。确认稳定后再同步到 `profiles/core`、对应正式 profile 或目标项目。
+创建后用真实 case 跑一遍，把输入、输出和截图放到 `debug/runs/<date>-<slug>/`。确认稳定后再把它加入需要的 profile 安装快照或组合说明。
 
 ## 更新 Skill 版本
 
-更新就是在对应 profile 里重新跑同一条 Vercel 安装命令，让它覆盖旧文件，然后看 Git diff：
+自创 Skill 直接在根目录 `skills/<skill-name>/` 修改；确认通过后，再按需更新 `profiles/core` 或其它 profile 的安装快照。外部或公司来源 Skill 才在对应 profile 里重新跑来源安装命令，让它覆盖旧文件，然后看 Git diff：
 
 ```bash
 cd /Users/cm/Documents/Me/skills/profiles/mattpocock-skills
@@ -299,7 +304,7 @@ env -u http_proxy -u https_proxy -u all_proxy npx --yes skills@latest list --jso
 ```bash
 cd /Users/cm/Documents/Me/skills
 comm -12 \
-  <(find profiles/core/.agents/skills -mindepth 1 -maxdepth 1 -type d -exec sh -c '[ -f "$1/SKILL.md" ] && basename "$1"' sh {} \; | sort) \
+  <(find skills -mindepth 1 -maxdepth 1 -type d -exec sh -c '[ -f "$1/SKILL.md" ] && basename "$1"' sh {} \; | sort) \
   <(find /Users/cm/.agents/skills -mindepth 1 -maxdepth 1 -type d -exec sh -c '[ -f "$1/SKILL.md" ] && basename "$1"' sh {} \; 2>/dev/null | sort)
 ```
 

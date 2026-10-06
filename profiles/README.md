@@ -1,5 +1,7 @@
 # Profiles
 
+自创 Skill 的 canonical source 是仓库根目录 `skills/<skill-name>/`。本目录下的 profile 保存来源副本、组合说明和运行态快照；外部或公司来源的 profile 还必须保留来源证据。
+
 每个 profile 都可以作为一个 Git source 子路径使用。
 推荐在其它项目里从 GitHub 安装某个 profile，而不是从本机目录手工复制。
 
@@ -21,6 +23,15 @@ env -u http_proxy -u https_proxy -u all_proxy \
   --agent codex --skill '*' --yes --copy --full-depth
 ```
 
+自创 Skill 从仓库根目录按名称单独安装，不把整个仓库当成一个安装单元：
+
+```bash
+env -u http_proxy -u https_proxy -u all_proxy \
+  npx --yes skills@latest add \
+  https://github.com/imchao9/skills/tree/main/skills/<skill-name> \
+  --agent codex --copy --yes
+```
+
 Git source 只包含已经推送到 GitHub 的内容。
 本地未提交或未推送的 profile 变化，需要先在本仓库提交并推送，或者临时使用本地路径安装做验证。
 
@@ -28,7 +39,7 @@ Git source 只包含已经推送到 GitHub 的内容。
 
 | Profile | 用途 |
 |---|---|
-| `core` | 默认最小集，稳定自研或长期自维护 skill |
+| `core` | 默认最小安装集合，成员可来自根目录 `skills/` 或来源 profile |
 | `global-runtime` | 本机 `~/.agents/skills` 的真相源 |
 | `ppt` | 正式 PPT / HTML 演示稿生产链路 |
 | `ppt-lab` | PPT skill 实验候选 |
@@ -64,7 +75,7 @@ Lock 是 profile 级 `skills-lock.json`，不是每个 skill 一个 `skill.lock`
 - `vendor-lab`
 - `experimental`
 
-自研 profile 可以没有 lock，因为这个仓库本身就是源。
+自创 Skill 的根目录 `skills/` 可以没有 profile 级 lock，因为这个仓库本身就是源。目标项目的复制安装和本机运行态都不是自创 Skill 的维护入口。
 
 组合 profile 可以额外维护 manifest，声明每个 Skill 的来源 profile、来源路径和职责；例如
 `profiles/software-factory/software-factory-set.json`。manifest 决定组合成员，`skills-lock.json`

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Feedgrab 信息抓取"
+  short_description: "快速抓取网页与社媒内容并回读结构化结果"
+  default_prompt: "Use $feedgrab to fetch one or more URLs and return verified structured content."
+policy:
+  allow_implicit_invocation: true

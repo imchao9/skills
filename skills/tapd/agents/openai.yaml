@@ -1,0 +1,4 @@
+interface:
+  display_name: "TAPD 工作项管理"
+  short_description: "查询、汇报并安全处理 TAPD 工作项、迭代与列表视图"
+  default_prompt: "使用 $tapd 读取这个 TAPD 链接，并给出可核验的结果。"
